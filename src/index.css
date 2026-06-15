@@ -1,0 +1,115 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Cormorant Garamond", Georgia, serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Custom background ambient overlay and scrollbar patterns for a museum archive feel */
+body {
+  background-color: #050805; /* Deep rich dark green-black */
+  color: #d4d4c8; /* Silvery warm sand-stone */
+  font-family: var(--font-serif); /* Default to cormorant garamond for editorial mood */
+  overflow-x: hidden;
+}
+
+/* Glassmorphism effects */
+.glass-panel {
+  background: rgba(5, 8, 5, 0.7);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(45, 79, 45, 0.25);
+  box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.45);
+}
+
+.glass-panel-amber {
+  background: rgba(16, 12, 6, 0.75);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 191, 0, 0.2);
+  box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Custom glowing effects */
+.glow-green {
+  box-shadow: 0 0 40px 4px rgba(45, 79, 45, 0.25);
+}
+
+.glow-amber {
+  box-shadow: 0 0 40px 4px rgba(255, 191, 0, 0.15);
+}
+
+/* Subtle parchment-like borders */
+.academic-border {
+  border: 1px solid rgba(45, 79, 45, 0.3);
+}
+
+.academic-border-amber {
+  border: 1px solid rgba(255, 191, 0, 0.3);
+}
+
+/* Ambient glow balls */
+.ambient-glow-1 {
+  background: radial-gradient(circle, rgba(26, 51, 26, 0.3) 0%, rgba(5, 8, 5, 0) 70%);
+}
+
+.ambient-glow-2 {
+  background: radial-gradient(circle, rgba(77, 61, 26, 0.2) 0%, rgba(5, 8, 5, 0) 70%);
+}
+
+/* Decorative grid pattern used in editorial theme */
+.editorial-grid-bg {
+  background-image: radial-gradient(#d4d4c8 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Custom transitions and scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #050805;
+}
+::-webkit-scrollbar-thumb {
+  background: #2d4f2d;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4a5c4a;
+}
+
+@keyframes slow-breathing {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.95;
+  }
+}
+
+.animate-slow-breathing {
+  animation: slow-breathing 4s ease-in-out infinite;
+}
+
+@keyframes drift {
+  0% { transform: translateY(0px) rotate(0deg); }
+  50% { transform: translateY(-15px) rotate(3deg); }
+  100% { transform: translateY(0px) rotate(0deg); }
+}
+
+.animate-drift {
+  animation: drift 10s ease-in-out infinite;
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 120s linear infinite;
+}
