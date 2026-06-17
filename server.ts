@@ -7,7 +7,11 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
+const isProduction =
+  process.env.NODE_ENV === "production" ||
+  process.argv.includes("--production") ||
+  process.env.npm_lifecycle_event === "start";
 
 app.use(express.json());
 
@@ -89,7 +93,7 @@ Guidelines:
 });
 
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

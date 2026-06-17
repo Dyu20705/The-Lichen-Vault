@@ -11,6 +11,7 @@ export default function App() {
   const [organisms, setOrganisms] = useState<LichenOrganism[]>([]);
   const [newlyGerminated, setNewlyGerminated] = useState<LichenOrganism | null>(null);
   const [mitosisProgress, setMitosisProgress] = useState<number>(0);
+  const [currentClock, setCurrentClock] = useState<string>(() => new Date().toISOString());
 
   // Load deposited ones from localStorage on launch
   useEffect(() => {
@@ -22,6 +23,14 @@ export default function App() {
         console.error("Local storage index corruption detected, repairing matrix:", e);
       }
     }
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setCurrentClock(new Date().toISOString());
+    }, 1000);
+
+    return () => window.clearInterval(interval);
   }, []);
 
   // Sync to local browser persistence
@@ -298,7 +307,7 @@ export default function App() {
             AUTHENTIC INTERACTION CABINET // NO DIGITAL COPIERS
           </div>
           <div>
-            CURRENT CLOCK: 2026-06-15T03:35:24-07:00
+            CURRENT CLOCK: {currentClock}
           </div>
         </footer>
       </div>
