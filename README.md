@@ -1,8 +1,30 @@
-# The Lichen Vault
+<p align="center">
+  <img src="src/demo/home.png" alt="The Lichen Vault home screen" width="920" />
+</p>
+
+<h1 align="center">The Lichen Vault</h1>
+
+<p align="center">
+  A breath-driven digital herbarium for cultivating persistent procedural lichen specimens.
+</p>
+
+<p align="center">
+  <img alt="Release" src="https://img.shields.io/badge/release-v0.1.0-d97706?style=for-the-badge" />
+  <img alt="React" src="https://img.shields.io/badge/React-19-61dafb?style=for-the-badge&logo=react&logoColor=111111" />
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-6-646cff?style=for-the-badge&logo=vite&logoColor=ffffff" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178c6?style=for-the-badge&logo=typescript&logoColor=ffffff" />
+  <img alt="MVP" src="https://img.shields.io/badge/status-MVP%20ready-10b981?style=for-the-badge" />
+</p>
 
 The Lichen Vault is a breath-driven digital herbarium. Visitors perform a three-breath deposition ritual, then the app transforms cadence, duration, and audio intensity into a persistent procedural lichen specimen that can be revisited in a private vault.
 
 The MVP is production-buildable, works without an AI key, and keeps specimen data in the browser by default. When `GEMINI_API_KEY` is configured, the server can generate new archival observation notes for each specimen; otherwise it falls back to bundled local observations.
+
+## Preview
+
+| Breath ritual | Specimen chamber |
+| --- | --- |
+| <img src="src/demo/ritual.png" alt="Breath ritual screen" width="440" /> | <img src="src/demo/specimen.png" alt="Specimen inspection screen" width="440" /> |
 
 ## Features
 
