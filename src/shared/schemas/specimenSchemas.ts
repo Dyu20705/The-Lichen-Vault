@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const LichenStructureSchema = z.enum(['Crustose', 'Foliose', 'Fruticose']);
+export const ObservationOriginSchema = z.enum(["gemini", "local_fallback", "legacy_unverified"]);
+export const VerificationStatusSchema = z.enum(["grounded", "fallback", "unverified"]);
 
 export const ArchivalObservationSchema = z.object({
   id: z.string().min(1, "ID cannot be empty"),
@@ -8,8 +10,9 @@ export const ArchivalObservationSchema = z.object({
   observationNumber: z.number().int().positive(),
   text: z.string().min(1),
   evidenceIds: z.array(z.string()).optional(),
-  confidence: z.number().min(0).max(1).optional(),
-  generatedBy: z.enum(["gemini", "local_fallback"]).optional()
+  confidence: z.number().min(0).max(1).nullable().optional(),
+  generatedBy: ObservationOriginSchema.optional(),
+  verificationStatus: VerificationStatusSchema.optional()
 });
 
 export const LegacyMemorySchema = z.object({
@@ -41,3 +44,34 @@ export const SpecimenSchema = z.object({
 });
 
 export type SpecimenDTO = z.infer<typeof SpecimenSchema>;
+
+export const SpecimenStorageEnvelopeSchema = z.object({
+  schemaVersion: z.literal(2),
+  migratedAt: z.string().optional(),
+  specimens: z.array(SpecimenSchema)
+});
+
+export const SpecimenEventSchema = z.object({
+  id: z.string().min(1),
+  specimenId: z.string().min(1),
+  timestamp: z.string().datetime(),
+  type: z.enum([
+    "breath_deposited",
+    "signal_analyzed",
+    "growth_simulated",
+    "anomaly_detected",
+    "archival_entry_created",
+    "intervention_proposed",
+    "intervention_approved",
+    "intervention_rejected",
+    "workflow_fallback"
+  ]),
+  schemaVersion: z.number().int().positive(),
+  evidenceIds: z.array(z.string()).default([]),
+  payload: z.record(z.string(), z.unknown())
+});
+
+export const SpecimenEventStorageEnvelopeSchema = z.object({
+  schemaVersion: z.literal(2),
+  events: z.array(SpecimenEventSchema)
+});

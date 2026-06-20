@@ -127,7 +127,9 @@ export function generateLichenFromBreaths(recordings: BreathRecording[]): Lichen
     fungalBlooms: 0,
     colorMutationOffset: 0,
     observations: [],
-    memories: []
+    memories: [],
+    schemaVersion: 2,
+    eventIds: []
   };
 }
 

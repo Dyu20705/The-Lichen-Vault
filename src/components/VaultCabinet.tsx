@@ -72,13 +72,21 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
         id: `obs_${birthTime}_1`,
         timestamp: birthTime,
         observationNumber: 1,
-        text: rand.pick(obsGroup1)
+        text: rand.pick(obsGroup1),
+        evidenceIds: [],
+        confidence: null,
+        generatedBy: "local_fallback",
+        verificationStatus: "fallback"
       },
       {
         id: `obs_${birthTime}_2`,
         timestamp: birthTime + 120000, // 2 minutes later
         observationNumber: 2,
-        text: rand.pick(obsGroup2)
+        text: rand.pick(obsGroup2),
+        evidenceIds: [],
+        confidence: null,
+        generatedBy: "local_fallback",
+        verificationStatus: "fallback"
       }
     ];
   };
@@ -147,11 +155,16 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
       
       const currentLogs = lichenToUpdate.observations || [];
       const nextNum = currentLogs.length + 1;
+      const generatedBy = data.origin === "gemini" ? "gemini" : "local_fallback";
       const newObs: ArchivalObservation = {
         id: `obs_${Date.now()}_${nextNum}`,
         timestamp: Date.now(),
         observationNumber: nextNum,
         text: data.fragment,
+        evidenceIds: generatedBy === "gemini" ? [`archivist_request_${nextNum}`] : [],
+        confidence: generatedBy === "gemini" ? (typeof data.confidence === "number" ? data.confidence : 0.72) : null,
+        generatedBy,
+        verificationStatus: generatedBy === "gemini" ? "grounded" : "fallback",
       };
 
       const updatedLichen: LichenOrganism = {

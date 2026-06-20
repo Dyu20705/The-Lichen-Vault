@@ -89,7 +89,8 @@ describe("Domain Models & Invariant Rules", () => {
           text: "Pristine orange thallus thallus has formed custom structures.",
           evidenceIds: ["ev_1"],
           confidence: 0.95,
-          generatedBy: "gemini"
+          generatedBy: "gemini",
+          verificationStatus: "grounded"
         }
       ],
       memories: [],
@@ -127,7 +128,8 @@ describe("Domain Models & Invariant Rules", () => {
             text: "Faulty confidence bounds.",
             evidenceIds: ["ev_1"],
             confidence: 1.5, // above 1.0!
-            generatedBy: "gemini" as const
+            generatedBy: "gemini" as const,
+            verificationStatus: "grounded" as const
           }
         ]
       };
@@ -145,7 +147,8 @@ describe("Domain Models & Invariant Rules", () => {
             text: "Unlabeled reference source.",
             evidenceIds: [], // Empty evidenceIds triggers failure
             confidence: 0.9,
-            generatedBy: "gemini" as const
+            generatedBy: "gemini" as const,
+            verificationStatus: "grounded" as const
           }
         ]
       };
@@ -162,8 +165,9 @@ describe("Domain Models & Invariant Rules", () => {
             observationNumber: 1,
             text: "Local fallback bypasses grounded requirement.",
             evidenceIds: [], 
-            confidence: 1.0,
-            generatedBy: "local_fallback" as const
+            confidence: null,
+            generatedBy: "local_fallback" as const,
+            verificationStatus: "fallback" as const
           }
         ]
       };
@@ -465,9 +469,10 @@ describe("Migration & Resilient Backward Compatibility", () => {
 
     expect(migrated.schemaVersion).toBe(2); // Migrated version target
     expect(migrated.id).toBe("spore_legacy_01");
-    expect(migrated.observations[0].generatedBy).toBe("local_fallback"); // Set to prevent invariant failures
+    expect(migrated.observations[0].generatedBy).toBe("legacy_unverified"); // Set to prevent invariant failures
     expect(migrated.observations[0].evidenceIds).toEqual([]);
-    expect(migrated.observations[0].confidence).toBe(1.0);
+    expect(migrated.observations[0].confidence).toBe(null);
+    expect(migrated.observations[0].verificationStatus).toBe("unverified");
     expect(migrated.crystalsCount).toBe(0); // Filled with defaults
     expect(migrated.fungalBlooms).toBe(0);
     expect(migrated.colorMutationOffset).toBe(0);

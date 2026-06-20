@@ -1,6 +1,8 @@
 import { InvariantError } from "./errors";
 
 export type LichenStructure = 'Crustose' | 'Foliose' | 'Fruticose';
+export type ObservationOrigin = "gemini" | "local_fallback" | "legacy_unverified";
+export type VerificationStatus = "grounded" | "fallback" | "unverified";
 
 export interface ArchivalObservation {
   id: string;
@@ -8,8 +10,9 @@ export interface ArchivalObservation {
   observationNumber: number;
   text: string;
   evidenceIds?: string[]; // reference ids used to ground the report
-  confidence?: number; // [0, 1]
-  generatedBy?: "gemini" | "local_fallback";
+  confidence?: number | null; // [0, 1] or null
+  generatedBy?: ObservationOrigin;
+  verificationStatus?: VerificationStatus;
 }
 
 export interface Specimen {
@@ -83,16 +86,31 @@ export function validateSpecimen(specimen: Specimen): void {
     if (!obs.id) {
       throw new InvariantError("ID must not be empty.");
     }
-    if (obs.confidence !== undefined && (obs.confidence < 0 || obs.confidence > 1)) {
+    if (obs.confidence !== undefined && obs.confidence !== null && (obs.confidence < 0 || obs.confidence > 1)) {
       throw new InvariantError("Confidence must remain in [0, 1].");
     }
-    // "Generated archival observations must contain at least one evidence reference unless they are explicitly marked as local degraded fallback."
-    if (
-      specimen.schemaVersion >= 2 &&
-      obs.generatedBy !== "local_fallback" &&
-      (!obs.evidenceIds || obs.evidenceIds.length === 0)
-    ) {
-      throw new InvariantError("Generated archival observations must contain at least one evidence reference unless they are explicitly marked as local degraded fallback.");
+    if (specimen.schemaVersion >= 2) {
+      if (obs.generatedBy === "gemini") {
+        if (!obs.evidenceIds || obs.evidenceIds.length === 0) {
+          throw new InvariantError("Gemini observations must contain at least one evidence reference.");
+        }
+        if (typeof obs.confidence !== "number") {
+          throw new InvariantError("Gemini observations must contain numeric confidence.");
+        }
+        if (obs.verificationStatus !== "grounded") {
+          throw new InvariantError("Gemini observations must be marked grounded.");
+        }
+      }
+
+      if (obs.generatedBy === "local_fallback" && obs.verificationStatus !== "fallback") {
+        throw new InvariantError("Local fallback observations must be marked fallback.");
+      }
+
+      if (obs.generatedBy === "legacy_unverified") {
+        if ((obs.evidenceIds?.length ?? 0) !== 0 || obs.confidence !== null || obs.verificationStatus !== "unverified") {
+          throw new InvariantError("Legacy observations must remain unverified with empty evidence and null confidence.");
+        }
+      }
     }
   }
 }

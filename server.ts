@@ -3,16 +3,37 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { z } from "zod";
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+function readPort(value: string | undefined): number {
+  const parsed = Number(value || 3000);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    console.warn(`Invalid PORT "${value}", falling back to 3000.`);
+    return 3000;
+  }
+  return parsed;
+}
+
+const PORT = readPort(process.env.PORT);
+
+const isProduction =
+  process.env.NODE_ENV === "production" ||
+  process.argv.includes("--production") ||
+  process.env.npm_lifecycle_event === "start";
 
 app.use(express.json());
 
+const GenerateFragmentRequestSchema = z.object({
+  name: z.string().min(1),
+  age: z.string().min(1),
+  growthStage: z.string().min(1)
+});
+
 // Initialize GoogleGenAI client lazily or if key is present
-let aiClient: any = null;
+let aiClient: GoogleGenAI | null = null;
 function getGeminiClient() {
   if (!aiClient) {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -50,13 +71,13 @@ const LOCAL_FALLBACKS = [
 // Endpoint to generate mysterious lichen Archival Observation
 app.post("/api/generate-fragment", async (req, res) => {
   try {
-    const { name, age, growthStage } = req.body;
+    const { name, age, growthStage } = GenerateFragmentRequestSchema.parse(req.body);
     
     const client = getGeminiClient();
     if (!client) {
       // Pick random fallback
       const randomMsg = LOCAL_FALLBACKS[Math.floor(Math.random() * LOCAL_FALLBACKS.length)];
-      return res.json({ fragment: randomMsg });
+      return res.json({ fragment: randomMsg, origin: "local_fallback", confidence: null });
     }
 
     const response = await client.models.generateContent({
@@ -80,16 +101,21 @@ Guidelines:
     });
 
     const generatedText = response.text?.trim()?.replace(/^["']|["']$/g, "") || LOCAL_FALLBACKS[0];
-    res.json({ fragment: generatedText });
-  } catch (err: any) {
+    res.json({
+      fragment: generatedText,
+      origin: "gemini",
+      confidence: 0.72,
+      evidenceIds: ["request.name", "request.age", "request.growthStage"]
+    });
+  } catch (err: unknown) {
     console.error("Error generating fragment from Gemini:", err);
     const randomMsg = LOCAL_FALLBACKS[Math.floor(Math.random() * LOCAL_FALLBACKS.length)];
-    res.json({ fragment: randomMsg });
+    res.json({ fragment: randomMsg, origin: "local_fallback", confidence: null });
   }
 });
 
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

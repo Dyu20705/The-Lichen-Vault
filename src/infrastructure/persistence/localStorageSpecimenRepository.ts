@@ -1,65 +1,167 @@
 import { Specimen, SpecimenEvent, validateSpecimen, validateSpecimenEvent } from "../../domain";
+import { MigrationError, StorageCorruptionError, StorageError, TransactionRollbackError } from "../../domain/errors";
+import {
+  SpecimenEventSchema,
+  SpecimenEventStorageEnvelopeSchema,
+  SpecimenSchema,
+  SpecimenStorageEnvelopeSchema
+} from "../../shared/schemas";
 import { SpecimenRepository } from "./specimenRepository";
-import { MigrationError, StorageError } from "../../domain/errors";
-import { SpecimenSchema } from "../../shared/schemas";
 
-export function migrateLichenOrganismToSpecimen(raw: any): Specimen {
-  try {
-    if (!raw || typeof raw !== "object") {
-      throw new MigrationError("Element is not a valid JSON object descriptor.", raw);
-    }
-    
-    // Check identification details
-    if (!raw.id || typeof raw.id !== "string") {
-      throw new MigrationError("Missing unique specimen verification identifier (id).", raw);
-    }
-    if (!raw.name || typeof raw.name !== "string") {
-      throw new MigrationError("Missing binomial specimen classification name (name).", raw);
-    }
+const CURRENT_STORAGE_VERSION = 2;
+const LEGACY_UNKNOWN_TIME = 1686700000000;
 
-    // Default missing rendering params or map gracefully
-    const migrated: any = {
-      id: raw.id,
-      name: raw.name,
-      seed: typeof raw.seed === "number" ? raw.seed : Math.floor(Math.random() * 1000000),
-      birthTime: typeof raw.birthTime === "number" ? raw.birthTime : Date.now(),
-      breathDuration: typeof raw.breathDuration === "number" ? raw.breathDuration : 0,
-      breathIntensity: typeof raw.breathIntensity === "number" ? raw.breathIntensity : 50,
-      breathRhythm: raw.breathRhythm || "Undefined Rhythm Rhythm",
-      branchDensity: typeof raw.branchDensity === "number" ? raw.branchDensity : 0.55,
-      baseColor: /^#[0-9a-fA-F]{6}$/.test(raw.baseColor || "") ? raw.baseColor : "#c4caa0",
-      accentColor: /^#[0-9a-fA-F]{6}$/.test(raw.accentColor || "") ? raw.accentColor : "#ffbf00",
-      growthDirection: typeof raw.growthDirection === "number" ? raw.growthDirection : 0,
-      glowIntensity: typeof raw.glowIntensity === "number" ? raw.glowIntensity : 0.4,
-      structure: ["Crustose", "Foliose", "Fruticose"].includes(raw.structure) ? raw.structure : "Crustose",
-      crystalsCount: typeof raw.crystalsCount === "number" ? raw.crystalsCount : 0,
-      fungalBlooms: typeof raw.fungalBlooms === "number" ? raw.fungalBlooms : 0,
-      colorMutationOffset: typeof raw.colorMutationOffset === "number" ? raw.colorMutationOffset : 0,
-      memories: Array.isArray(raw.memories) ? raw.memories : [],
-      schemaVersion: typeof raw.schemaVersion === "number" ? raw.schemaVersion : 2,
-      eventIds: Array.isArray(raw.eventIds) ? raw.eventIds : []
+type UnknownRecord = Record<string, unknown>;
+
+export interface RecoverySnapshot {
+  storageKey: string;
+  rawPayload: string | null;
+  errorCode: string;
+  reason: string;
+  recoverability: "recoverable" | "unrecoverable";
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stableHash(input: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+function deterministicObservationId(specimenId: string, index: number): string {
+  return `obs_${stableHash(`legacy-observation:${specimenId}:${index}`)}_${index + 1}`;
+}
+
+function deterministicBirthTime(raw: UnknownRecord): number {
+  if (typeof raw.birthTime === "number" && Number.isFinite(raw.birthTime) && raw.birthTime > 0) {
+    return Math.trunc(raw.birthTime);
+  }
+  if (typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) && raw.createdAt > 0) {
+    return Math.trunc(raw.createdAt);
+  }
+  if (typeof raw.createdAt === "string") {
+    const parsed = Date.parse(raw.createdAt);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  if (typeof raw.id === "string") {
+    const match = raw.id.match(/(?:lichen|spore|specimen)?_?(\d{12,})/);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
+    }
+  }
+  return LEGACY_UNKNOWN_TIME;
+}
+
+function normalizeObservation(rawObservation: unknown, specimenId: string, birthTime: number, index: number) {
+  const raw = isRecord(rawObservation) ? rawObservation : {};
+  const explicitOrigin = raw.generatedBy;
+  const hasEvidence = Array.isArray(raw.evidenceIds) && raw.evidenceIds.length > 0;
+  const hasConfidence = typeof raw.confidence === "number";
+
+  if (explicitOrigin === "gemini" && hasEvidence && hasConfidence) {
+    return {
+      id: typeof raw.id === "string" && raw.id.trim() ? raw.id : deterministicObservationId(specimenId, index),
+      timestamp: typeof raw.timestamp === "number" && raw.timestamp > 0 ? Math.trunc(raw.timestamp) : birthTime,
+      observationNumber: typeof raw.observationNumber === "number" && raw.observationNumber > 0 ? Math.trunc(raw.observationNumber) : index + 1,
+      text: typeof raw.text === "string" && raw.text.length > 0 ? raw.text : "Unrecorded historical notes on tissue containment.",
+      evidenceIds: raw.evidenceIds,
+      confidence: raw.confidence,
+      generatedBy: "gemini" as const,
+      verificationStatus: "grounded" as const
     };
+  }
 
-    // Map historical observations
-    const observations = Array.isArray(raw.observations) ? raw.observations : [];
-    migrated.observations = observations.map((obs: any, index: number) => {
-      return {
-        id: obs.id || `obs_${raw.id}_${index + 1}`,
-        timestamp: obs.timestamp || migrated.birthTime,
-        observationNumber: obs.observationNumber || (index + 1),
-        text: obs.text || "Unrecorded historical notes on tissue containment.",
-        evidenceIds: Array.isArray(obs.evidenceIds) ? obs.evidenceIds : [],
-        confidence: typeof obs.confidence === "number" ? obs.confidence : 1.0,
-        generatedBy: obs.generatedBy || "local_fallback"
-      };
-    });
+  if (explicitOrigin === "local_fallback") {
+    return {
+      id: typeof raw.id === "string" && raw.id.trim() ? raw.id : deterministicObservationId(specimenId, index),
+      timestamp: typeof raw.timestamp === "number" && raw.timestamp > 0 ? Math.trunc(raw.timestamp) : birthTime,
+      observationNumber: typeof raw.observationNumber === "number" && raw.observationNumber > 0 ? Math.trunc(raw.observationNumber) : index + 1,
+      text: typeof raw.text === "string" && raw.text.length > 0 ? raw.text : "Unrecorded local fallback note.",
+      evidenceIds: hasEvidence ? raw.evidenceIds : [],
+      confidence: hasConfidence ? raw.confidence : null,
+      generatedBy: "local_fallback" as const,
+      verificationStatus: "fallback" as const
+    };
+  }
+
+  return {
+    id: typeof raw.id === "string" && raw.id.trim() ? raw.id : deterministicObservationId(specimenId, index),
+    timestamp: typeof raw.timestamp === "number" && raw.timestamp > 0 ? Math.trunc(raw.timestamp) : birthTime,
+    observationNumber: typeof raw.observationNumber === "number" && raw.observationNumber > 0 ? Math.trunc(raw.observationNumber) : index + 1,
+    text: typeof raw.text === "string" && raw.text.length > 0 ? raw.text : "Unrecorded historical notes on tissue containment.",
+    evidenceIds: [],
+    confidence: null,
+    generatedBy: "legacy_unverified" as const,
+    verificationStatus: "unverified" as const
+  };
+}
+
+export function migrateLichenOrganismToSpecimen(rawInput: unknown): Specimen {
+  try {
+    const alreadyParsed = SpecimenSchema.safeParse(rawInput);
+    if (alreadyParsed.success && isRecord(rawInput) && rawInput.schemaVersion === CURRENT_STORAGE_VERSION) {
+      validateSpecimen(alreadyParsed.data as Specimen);
+      return alreadyParsed.data as Specimen;
+    }
+
+    if (!isRecord(rawInput)) {
+      throw new MigrationError("Element is not a valid JSON object descriptor.", rawInput);
+    }
+
+    if (typeof rawInput.schemaVersion === "number" && rawInput.schemaVersion > CURRENT_STORAGE_VERSION) {
+      throw new MigrationError(`Unsupported future specimen schema version: ${rawInput.schemaVersion}`, rawInput);
+    }
+
+    if (typeof rawInput.id !== "string" || rawInput.id.trim() === "") {
+      throw new MigrationError("Missing unique specimen verification identifier (id).", rawInput);
+    }
+    if (typeof rawInput.name !== "string" || rawInput.name.trim() === "") {
+      throw new MigrationError("Missing binomial specimen classification name (name).", rawInput);
+    }
+
+    const seed = typeof rawInput.seed === "number" && Number.isInteger(rawInput.seed)
+      ? rawInput.seed
+      : stableHash(`legacy-seed:${rawInput.id}:${rawInput.name}`);
+    const birthTime = deterministicBirthTime(rawInput);
+    const rawObservations = Array.isArray(rawInput.observations) ? rawInput.observations : [];
+
+    const migrated = {
+      id: rawInput.id,
+      name: rawInput.name,
+      seed,
+      birthTime,
+      breathDuration: typeof rawInput.breathDuration === "number" ? rawInput.breathDuration : 0,
+      breathIntensity: typeof rawInput.breathIntensity === "number" ? rawInput.breathIntensity : 50,
+      breathRhythm: typeof rawInput.breathRhythm === "string" ? rawInput.breathRhythm : "Undefined Rhythm",
+      branchDensity: typeof rawInput.branchDensity === "number" ? rawInput.branchDensity : 0.55,
+      baseColor: typeof rawInput.baseColor === "string" && /^#[0-9a-fA-F]{6}$/.test(rawInput.baseColor) ? rawInput.baseColor : "#c4caa0",
+      accentColor: typeof rawInput.accentColor === "string" && /^#[0-9a-fA-F]{6}$/.test(rawInput.accentColor) ? rawInput.accentColor : "#ffbf00",
+      growthDirection: typeof rawInput.growthDirection === "number" ? rawInput.growthDirection : 0,
+      glowIntensity: typeof rawInput.glowIntensity === "number" ? rawInput.glowIntensity : 0.4,
+      structure: rawInput.structure === "Crustose" || rawInput.structure === "Foliose" || rawInput.structure === "Fruticose" ? rawInput.structure : "Crustose",
+      crystalsCount: typeof rawInput.crystalsCount === "number" ? Math.max(0, Math.trunc(rawInput.crystalsCount)) : 0,
+      fungalBlooms: typeof rawInput.fungalBlooms === "number" ? Math.max(0, Math.trunc(rawInput.fungalBlooms)) : 0,
+      colorMutationOffset: typeof rawInput.colorMutationOffset === "number" ? rawInput.colorMutationOffset : 0,
+      observations: rawObservations.map((observation, index) => normalizeObservation(observation, rawInput.id as string, birthTime, index)),
+      memories: Array.isArray(rawInput.memories) ? rawInput.memories : [],
+      schemaVersion: CURRENT_STORAGE_VERSION,
+      eventIds: Array.isArray(rawInput.eventIds) ? [...new Set(rawInput.eventIds.filter((id): id is string => typeof id === "string"))] : []
+    };
 
     const parsed = SpecimenSchema.parse(migrated);
     validateSpecimen(parsed as Specimen);
     return parsed as Specimen;
-  } catch (err: any) {
-    if (err instanceof MigrationError) throw err;
-    throw new MigrationError(`Structural validation conversion failure: ${err.message}`, raw);
+  } catch (error) {
+    if (error instanceof MigrationError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(`Structural validation conversion failure: ${message}`, rawInput);
   }
 }
 
@@ -72,88 +174,166 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
     if (eventKey) this.eventKey = eventKey;
   }
 
-  private getAllRawSpecimens(): any[] {
+  getRecoverySnapshot(error: unknown): RecoverySnapshot | null {
+    if (!(error instanceof StorageCorruptionError)) return null;
+    return {
+      storageKey: error.storageKey,
+      rawPayload: error.rawPayload,
+      errorCode: error.code,
+      reason: error.reason,
+      recoverability: error.recoverability
+    };
+  }
+
+  resetStorage(): void {
+    localStorage.removeItem(this.specimenKey);
+    localStorage.removeItem(this.eventKey);
+  }
+
+  private parseJson(rawPayload: string, storageKey: string): unknown {
     try {
-      const data = localStorage.getItem(this.specimenKey);
-      if (!data) return [];
-      const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
+      return JSON.parse(rawPayload);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new StorageCorruptionError(`Malformed JSON in ${storageKey}.`, storageKey, rawPayload, reason);
     }
   }
 
-  private getAllRawEvents(): any[] {
-    try {
-      const data = localStorage.getItem(this.eventKey);
-      if (!data) return [];
-      const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
+  private readSpecimenEnvelope(): Specimen[] {
+    const rawPayload = localStorage.getItem(this.specimenKey);
+    if (rawPayload === null) return [];
+    const parsed = this.parseJson(rawPayload, this.specimenKey);
+
+    if (Array.isArray(parsed)) {
+      return parsed.map((raw) => migrateLichenOrganismToSpecimen(raw));
     }
+
+    if (!isRecord(parsed)) {
+      throw new StorageCorruptionError("Specimen storage envelope is not an object.", this.specimenKey, rawPayload, "Expected object or legacy array.");
+    }
+    if (typeof parsed.schemaVersion === "number" && parsed.schemaVersion > CURRENT_STORAGE_VERSION) {
+      throw new StorageCorruptionError("Specimen storage uses an unsupported future schema version.", this.specimenKey, rawPayload, `schemaVersion=${parsed.schemaVersion}`, "unrecoverable");
+    }
+
+    const envelope = SpecimenStorageEnvelopeSchema.safeParse(parsed);
+    if (!envelope.success) {
+      throw new StorageCorruptionError("Specimen storage envelope failed validation.", this.specimenKey, rawPayload, envelope.error.message);
+    }
+    return envelope.data.specimens.map((specimen) => {
+      validateSpecimen(specimen as Specimen);
+      return specimen as Specimen;
+    });
   }
 
-  private saveRawSpecimens(raws: any[]): void {
-    try {
-      localStorage.setItem(this.specimenKey, JSON.stringify(raws));
-    } catch (e) {
-      throw new StorageError("Could not write flora serialized state to localStorage", e);
+  private readEventEnvelope(): SpecimenEvent[] {
+    const rawPayload = localStorage.getItem(this.eventKey);
+    if (rawPayload === null) return [];
+    const parsed = this.parseJson(rawPayload, this.eventKey);
+
+    const rawEvents = Array.isArray(parsed)
+      ? parsed
+      : isRecord(parsed) && typeof parsed.schemaVersion === "number" && parsed.schemaVersion <= CURRENT_STORAGE_VERSION
+        ? (() => {
+            const envelope = SpecimenEventStorageEnvelopeSchema.safeParse(parsed);
+            if (!envelope.success) {
+              throw new StorageCorruptionError("Event storage envelope failed validation.", this.eventKey, rawPayload, envelope.error.message);
+            }
+            return envelope.data.events;
+          })()
+        : null;
+
+    if (!rawEvents) {
+      throw new StorageCorruptionError("Event storage envelope is not supported.", this.eventKey, rawPayload, "Expected legacy array or v2 envelope.");
     }
+
+    return rawEvents.map((raw) => {
+      const parsedEvent = SpecimenEventSchema.parse(raw) as SpecimenEvent;
+      validateSpecimenEvent(parsedEvent);
+      return parsedEvent;
+    });
   }
 
-  private saveRawEvents(raws: any[]): void {
-    try {
-      localStorage.setItem(this.eventKey, JSON.stringify(raws));
-    } catch (e) {
-      throw new StorageError("Could not write event serialized state to localStorage", e);
-    }
+  private writeSpecimens(specimens: Specimen[]): void {
+    const envelope = SpecimenStorageEnvelopeSchema.parse({
+      schemaVersion: CURRENT_STORAGE_VERSION,
+      specimens
+    });
+    localStorage.setItem(this.specimenKey, JSON.stringify(envelope));
+  }
+
+  private writeEvents(events: SpecimenEvent[]): void {
+    const envelope = SpecimenEventStorageEnvelopeSchema.parse({
+      schemaVersion: CURRENT_STORAGE_VERSION,
+      events
+    });
+    localStorage.setItem(this.eventKey, JSON.stringify(envelope));
   }
 
   async getSpecimen(id: string): Promise<Specimen | null> {
-    const rawList = this.getAllRawSpecimens();
-    const foundRaw = rawList.find((item) => item && item.id === id);
-    if (!foundRaw) return null;
-
-    try {
-      return migrateLichenOrganismToSpecimen(foundRaw);
-    } catch (err) {
-      // Degraded recovery behavior as requested:
-      // "Do not crash. Preserve original payload. Expose a clear recoverable error."
-      console.warn("Corrupted specimen record encountered during retrieval:", err);
-      // Construct a minimal recovery specimen to bypass loader blocking, or return migrated version
-      // Let's rethrow as a storage or migration error for the controller to handle gracefully if desired
-      throw err;
-    }
+    return this.readSpecimenEnvelope().find((item) => item.id === id) ?? null;
   }
 
   async saveSpecimen(specimen: Specimen): Promise<void> {
-    validateSpecimen(specimen);
-    const rawList = this.getAllRawSpecimens();
-    const index = rawList.findIndex((item) => item && item.id === specimen.id);
-    
-    if (index >= 0) {
-      rawList[index] = specimen;
-    } else {
-      rawList.unshift(specimen); // keep new item at first position matching existing UX
-    }
+    const parsed = SpecimenSchema.parse(specimen) as Specimen;
+    validateSpecimen(parsed);
+    const specimens = this.readSpecimenEnvelope();
+    const index = specimens.findIndex((item) => item.id === parsed.id);
+    const nextSpecimens = index >= 0
+      ? specimens.map((item) => (item.id === parsed.id ? parsed : item))
+      : [parsed, ...specimens];
+    this.writeSpecimens(nextSpecimens);
+  }
 
-    this.saveRawSpecimens(rawList);
+  async listSpecimens(): Promise<Specimen[]> {
+    return this.readSpecimenEnvelope();
   }
 
   async appendEvent(event: SpecimenEvent): Promise<void> {
-    validateSpecimenEvent(event);
-    const rawEvents = this.getAllRawEvents();
-    rawEvents.push(event);
-    this.saveRawEvents(rawEvents);
+    const parsedEvent = SpecimenEventSchema.parse(event) as SpecimenEvent;
+    validateSpecimenEvent(parsedEvent);
 
-    // Sync back reference to the specimen
-    const specimen = await this.getSpecimen(event.specimenId);
-    if (specimen) {
-      if (!specimen.eventIds.includes(event.id)) {
-        specimen.eventIds.push(event.id);
-        await this.saveSpecimen(specimen);
+    const previousEventsRaw = localStorage.getItem(this.eventKey);
+    const previousSpecimensRaw = localStorage.getItem(this.specimenKey);
+    const events = this.readEventEnvelope();
+    if (events.some((existing) => existing.id === parsedEvent.id)) {
+      return;
+    }
+
+    const specimens = this.readSpecimenEnvelope();
+    const targetIndex = specimens.findIndex((item) => item.id === parsedEvent.specimenId);
+    const nextEvents = [...events, parsedEvent];
+    const nextSpecimens = [...specimens];
+
+    if (targetIndex >= 0) {
+      const target = {
+        ...nextSpecimens[targetIndex],
+        eventIds: [...new Set([...nextSpecimens[targetIndex].eventIds, parsedEvent.id])]
+      };
+      validateSpecimen(target);
+      nextSpecimens[targetIndex] = target;
+    }
+
+    try {
+      this.writeEvents(nextEvents);
+      this.writeSpecimens(nextSpecimens);
+      const verifiedEvents = this.readEventEnvelope();
+      const verifiedSpecimens = this.readSpecimenEnvelope();
+      if (!verifiedEvents.some((stored) => stored.id === parsedEvent.id)) {
+        throw new StorageError(`Staged event write did not verify for ${parsedEvent.id}.`);
       }
+      if (targetIndex >= 0 && !verifiedSpecimens.find((stored) => stored.id === parsedEvent.specimenId)?.eventIds.includes(parsedEvent.id)) {
+        throw new StorageError(`Staged specimen reference write did not verify for ${parsedEvent.id}.`);
+      }
+    } catch (error) {
+      try {
+        if (previousEventsRaw === null) localStorage.removeItem(this.eventKey);
+        else localStorage.setItem(this.eventKey, previousEventsRaw);
+        if (previousSpecimensRaw === null) localStorage.removeItem(this.specimenKey);
+        else localStorage.setItem(this.specimenKey, previousSpecimensRaw);
+      } catch (rollbackError) {
+        throw new TransactionRollbackError("Transaction-like staged write failed and rollback also failed.", error, rollbackError);
+      }
+      throw new StorageError("Transaction-like staged write failed and rolled back.", error);
     }
   }
 
@@ -165,38 +345,21 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
       types?: SpecimenEvent["type"][];
     }
   ): Promise<SpecimenEvent[]> {
-    const rawEvents = this.getAllRawEvents();
-    let events: SpecimenEvent[] = [];
-
-    for (const raw of rawEvents) {
-      try {
-        if (raw && raw.specimenId === specimenId) {
-          validateSpecimenEvent(raw as SpecimenEvent);
-          events.push(raw as SpecimenEvent);
-        }
-      } catch (e) {
-        console.warn("Corrupted memory event discarded during list querying:", e);
-      }
-    }
-
-    // Filter by timestamp (before)
+    let events = this.readEventEnvelope().filter((event) => event.specimenId === specimenId);
     if (options?.before) {
       const beforeTime = Date.parse(options.before);
-      events = events.filter((e) => Date.parse(e.timestamp) < beforeTime);
+      events = events.filter((event) => Date.parse(event.timestamp) < beforeTime);
     }
-
-    // Filter by types
     if (options?.types && options.types.length > 0) {
-      events = events.filter((e) => options.types!.includes(e.type));
+      events = events.filter((event) => options.types!.includes(event.type));
     }
-
-    // Sort chronologically ascending
-    events = events.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-
+    events = [...events].sort((a, b) => {
+      const timeDelta = Date.parse(a.timestamp) - Date.parse(b.timestamp);
+      return timeDelta === 0 ? a.id.localeCompare(b.id) : timeDelta;
+    });
     if (options?.limit !== undefined) {
       events = events.slice(-options.limit);
     }
-
     return events;
   }
 }

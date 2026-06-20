@@ -1,33 +1,50 @@
 import { useState, useEffect } from "react";
-import { BookOpen, Sparkles, Wind, Eye } from "lucide-react";
+import { BookOpen, Wind, Eye, ShieldAlert } from "lucide-react";
 import { LichenOrganism, BreathRecording } from "./types";
 import { generateLichenFromBreaths } from "./utils/generator";
 import { BreathRitual } from "./components/BreathRitual";
 import { VaultCabinet } from "./components/VaultCabinet";
 import { LichenRenderer } from "./components/LichenRenderer";
+import { LocalStorageSpecimenRepository, RecoverySnapshot } from "./infrastructure/persistence/localStorageSpecimenRepository";
+
+const repository = new LocalStorageSpecimenRepository();
 
 export default function App() {
   const [view, setView] = useState<"landing" | "ritual" | "germinating" | "reveal" | "vault">("landing");
   const [organisms, setOrganisms] = useState<LichenOrganism[]>([]);
   const [newlyGerminated, setNewlyGerminated] = useState<LichenOrganism | null>(null);
   const [mitosisProgress, setMitosisProgress] = useState<number>(0);
+  const [recoverySnapshot, setRecoverySnapshot] = useState<RecoverySnapshot | null>(null);
 
-  // Load deposited ones from localStorage on launch
+  // Load deposited ones from the secure LocalStorageSpecimenRepository on launch
   useEffect(() => {
-    const saved = localStorage.getItem("lichen_vault_flora");
-    if (saved) {
+    async function initArchive() {
       try {
-        setOrganisms(JSON.parse(saved));
-      } catch (e) {
-        console.error("Local storage index corruption detected, repairing matrix:", e);
+        const list = await repository.listSpecimens();
+        setOrganisms(list);
+        setRecoverySnapshot(null);
+      } catch (error) {
+        console.error("Local storage index corruption detected, entering degraded containment:", error);
+        setRecoverySnapshot(repository.getRecoverySnapshot(error) ?? {
+          storageKey: "lichen_vault_flora",
+          rawPayload: null,
+          errorCode: "UNKNOWN_STORAGE_ERROR",
+          reason: error instanceof Error ? error.message : "Failed to parse underlying JSON storage.",
+          recoverability: "recoverable"
+        });
       }
     }
+    initArchive();
   }, []);
 
-  // Sync to local browser persistence
-  const saveOrganismsToLocalStorage = (updatedList: LichenOrganism[]) => {
-    setOrganisms(updatedList);
-    localStorage.setItem("lichen_vault_flora", JSON.stringify(updatedList));
+  const retryArchiveLoad = async () => {
+    try {
+      const list = await repository.listSpecimens();
+      setOrganisms(list);
+      setRecoverySnapshot(null);
+    } catch (error) {
+      setRecoverySnapshot(repository.getRecoverySnapshot(error) ?? recoverySnapshot);
+    }
   };
 
   const handleBeginDeposit = () => {
@@ -52,9 +69,23 @@ export default function App() {
         if (prev >= 100) {
           clearInterval(interval);
           
-          // Complete and append to local ledger list
-          const updated = [newOrganism, ...organisms];
-          saveOrganismsToLocalStorage(updated);
+          // Complete and persist through repository layer
+          repository.saveSpecimen(newOrganism)
+            .then(() => repository.listSpecimens())
+            .then((list) => {
+              setOrganisms(list);
+              setRecoverySnapshot(null);
+            })
+            .catch((e) => {
+              console.error("Failed to save virtual specimen thallus:", e);
+              setRecoverySnapshot(repository.getRecoverySnapshot(e) ?? {
+                storageKey: "lichen_vault_flora",
+                rawPayload: null,
+                errorCode: "SPECIMEN_SAVE_FAILED",
+                reason: e instanceof Error ? e.message : "Failed to save specimen.",
+                recoverability: "recoverable"
+              });
+            });
           
           // Transition to the reveal step
           setTimeout(() => {
@@ -67,9 +98,35 @@ export default function App() {
     }, 120);
   };
 
-  const handleUpdateOrganismInVault = (updated: LichenOrganism) => {
-    const newList = organisms.map((o) => (o.id === updated.id ? updated : o));
-    saveOrganismsToLocalStorage(newList);
+  const handleUpdateOrganismInVault = async (updated: LichenOrganism) => {
+    try {
+      await repository.saveSpecimen(updated);
+      const list = await repository.listSpecimens();
+      setOrganisms(list);
+      setRecoverySnapshot(null);
+    } catch (error) {
+      console.error("Failed to commit specimen update:", error);
+      setRecoverySnapshot(repository.getRecoverySnapshot(error) ?? {
+        storageKey: "lichen_vault_flora",
+        rawPayload: null,
+        errorCode: "SPECIMEN_UPDATE_FAILED",
+        reason: error instanceof Error ? error.message : "Failed to commit specimen update.",
+        recoverability: "recoverable"
+      });
+    }
+  };
+
+  const handleWipeAndResetVault = () => {
+    if (window.confirm("CRITICAL WARNING: This intentionally resets the local vault storage in this browser. Corrupted raw payloads will be deleted. Continue?")) {
+      repository.resetStorage();
+      setOrganisms([]);
+      setRecoverySnapshot(null);
+    }
+  };
+
+  const handleCopyRawPayload = async () => {
+    if (!recoverySnapshot?.rawPayload) return;
+    await navigator.clipboard.writeText(recoverySnapshot.rawPayload);
   };
 
   // Reveal step transitions smoothly into the main vault inspect chambers
@@ -139,7 +196,63 @@ export default function App() {
         {/* MAIN DYNAMIC CONTENT SCREEN */}
         <main className="flex-1 max-w-6xl mx-auto w-full flex items-center justify-center z-10 py-12 relative">
           
-          {view === "landing" && (
+          {recoverySnapshot ? (
+            // CORRUPTED DATABASE MATRIX RECOVERY FRAMEWORK
+            <div id="compromised_vault_viewport" className="text-center max-w-xl mx-auto flex flex-col items-center justify-center p-8 border border-red-950/40 bg-black/80 rounded-xl py-12 relative z-50 animate-fade-in font-serif">
+              <div className="w-20 h-20 rounded-full border border-red-500/35 bg-red-950/15 flex items-center justify-center mb-6">
+                <ShieldAlert className="w-10 h-10 text-red-500 animate-pulse" />
+              </div>
+              <p className="font-sans text-red-500 uppercase text-[11px] tracking-[0.3em] font-semibold mb-2">
+                SYSTEM CORRUPTION FLAG TRIGGERED
+              </p>
+              <h2 className="text-3xl font-light text-[#d4d4c8] leading-tight tracking-wide mb-4">
+                HERMETIC SEAL BREACH DETECTED
+              </h2>
+              <p className="font-sans text-xs text-[#8ba18b] uppercase tracking-widest mb-6">
+                Atmosphere status: DEGRADED & COMPROMISED
+              </p>
+              <div className="bg-[#050805] border border-red-950/40 p-4 rounded text-left font-mono text-[9.5px] leading-relaxed text-red-400 max-h-56 overflow-y-auto mb-8 w-full select-all">
+                <div>Storage key: {recoverySnapshot.storageKey}</div>
+                <div>Error code: {recoverySnapshot.errorCode}</div>
+                <div>Recoverability: {recoverySnapshot.recoverability}</div>
+                <div>Reason: {recoverySnapshot.reason}</div>
+                <div className="mt-3 text-[#d4d4c8]/80 whitespace-pre-wrap">
+                  {recoverySnapshot.rawPayload ?? "No raw payload was available."}
+                </div>
+              </div>
+              <p className="font-serif italic text-xs text-[#d4d4c8]/70 max-w-md mb-8">
+                "An unexpected interference wave has breached the capsule's carbon structure. Original specimens could not be safely read or translated. If the raw storage data cannot be recovered, a fresh atmospheric initialization is required to restore the seal."
+              </p>
+              <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
+                <button
+                  onClick={retryArchiveLoad}
+                  className="border border-[#ffbf00]/40 text-[#ffbf00] font-sans py-3.5 px-6 rounded-sm hover:bg-[#ffbf00]/10 transition-all font-mono text-[10px] tracking-widest uppercase cursor-pointer bg-transparent"
+                >
+                  RETRY PARSE
+                </button>
+                <button
+                  onClick={handleCopyRawPayload}
+                  className="border border-[#2d4f2d]/50 text-[#8ba18b] font-sans py-3.5 px-6 rounded-sm hover:bg-[#d4d4c8]/5 transition-all font-mono text-[10px] tracking-widest uppercase cursor-pointer bg-transparent"
+                >
+                  COPY RAW DATA
+                </button>
+                <button
+                  onClick={() => setRecoverySnapshot(null)}
+                  className="border border-[#2d4f2d]/50 text-[#8ba18b] font-sans py-3.5 px-6 rounded-sm hover:bg-[#d4d4c8]/5 transition-all font-mono text-[10px] tracking-widest uppercase cursor-pointer bg-transparent"
+                >
+                  IGNORE & DISMISS WARNING
+                </button>
+                <button
+                  onClick={handleWipeAndResetVault}
+                  className="border border-red-500/40 text-red-400 font-sans py-3.5 px-6 rounded-sm hover:bg-red-950/30 transition-all font-mono text-[10px] tracking-widest uppercase cursor-pointer bg-transparent"
+                >
+                  RESET STORAGE
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {view === "landing" && (
             // ================= STEP 1: LANDING PAGE =================
             <div id="landing_viewport" className="text-center max-w-2xl mx-auto flex flex-col items-center justify-center py-6 animate-fade-in font-serif">
               {/* Visual focus element: Large glowing floating specimen dome */}
@@ -286,8 +399,10 @@ export default function App() {
               />
             </div>
           )}
+        </>
+      )}
 
-        </main>
+    </main>
 
         {/* FOOTER: Static Observatory Metadata */}
         <footer className="max-w-6xl mx-auto w-full flex flex-col sm:flex-row items-center justify-between text-center sm:text-left font-sans text-[8px] tracking-[0.2em] text-[#8ba18b]/60 border-t border-[#2d4f2d]/30 pt-4 gap-2 z-10 select-none">
@@ -298,7 +413,7 @@ export default function App() {
             AUTHENTIC INTERACTION CABINET // NO DIGITAL COPIERS
           </div>
           <div>
-            CURRENT CLOCK: 2026-06-15T03:35:24-07:00
+            ARCHIVE TIME: LOCAL BROWSER RECORD
           </div>
         </footer>
       </div>

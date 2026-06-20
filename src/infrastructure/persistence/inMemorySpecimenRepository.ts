@@ -1,30 +1,53 @@
-import { Specimen, SpecimenEvent } from "../../domain";
+import { Specimen, SpecimenEvent, validateSpecimen, validateSpecimenEvent } from "../../domain";
 import { SpecimenRepository } from "./specimenRepository";
-import { NotFoundError } from "../../domain/errors";
+import { SpecimenEventSchema, SpecimenSchema } from "../../shared/schemas";
+
+function deepClone<T>(value: T): T {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
 export class InMemorySpecimenRepository implements SpecimenRepository {
   private specimens = new Map<string, Specimen>();
   private eventsBySpecimen = new Map<string, SpecimenEvent[]>();
 
   async getSpecimen(id: string): Promise<Specimen | null> {
-    return this.specimens.get(id) || null;
+    const val = this.specimens.get(id);
+    if (!val) return null;
+    return deepClone(val);
   }
 
   async saveSpecimen(specimen: Specimen): Promise<void> {
-    this.specimens.set(specimen.id, { ...specimen });
+    const parsed = SpecimenSchema.parse(specimen) as Specimen;
+    validateSpecimen(parsed);
+    this.specimens.set(parsed.id, deepClone(parsed));
+  }
+
+  async listSpecimens(): Promise<Specimen[]> {
+    return Array.from(this.specimens.values()).map((specimen) => deepClone(specimen));
   }
 
   async appendEvent(event: SpecimenEvent): Promise<void> {
-    const events = this.eventsBySpecimen.get(event.specimenId) || [];
-    events.push({ ...event });
-    this.eventsBySpecimen.set(event.specimenId, events);
+    const parsed = SpecimenEventSchema.parse(event) as SpecimenEvent;
+    validateSpecimenEvent(parsed);
 
-    // Update specimen's catalog of event references
-    const specimen = this.specimens.get(event.specimenId);
+    for (const evList of this.eventsBySpecimen.values()) {
+      if (evList.some((existing) => existing.id === parsed.id)) {
+        return;
+      }
+    }
+
+    const events = this.eventsBySpecimen.get(parsed.specimenId) || [];
+    this.eventsBySpecimen.set(parsed.specimenId, [...events, deepClone(parsed)]);
+
+    const specimen = this.specimens.get(parsed.specimenId);
     if (specimen) {
-      if (!specimen.eventIds.includes(event.id)) {
-        specimen.eventIds.push(event.id);
-        this.specimens.set(event.specimenId, specimen);
+      if (!specimen.eventIds.includes(parsed.id)) {
+        const updated = { ...specimen, eventIds: [...specimen.eventIds, parsed.id] };
+        validateSpecimen(updated);
+        this.specimens.set(parsed.specimenId, deepClone(updated));
       }
     }
   }
@@ -50,13 +73,15 @@ export class InMemorySpecimenRepository implements SpecimenRepository {
       events = events.filter((e) => options.types!.includes(e.type));
     }
 
-    // Sort by timestamp then limit
-    events = [...events].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    events = [...events].sort((a, b) => {
+      const timeDelta = Date.parse(a.timestamp) - Date.parse(b.timestamp);
+      return timeDelta === 0 ? a.id.localeCompare(b.id) : timeDelta;
+    });
 
     if (options?.limit !== undefined) {
       events = events.slice(-options.limit);
     }
 
-    return events;
+    return events.map((event) => deepClone(event));
   }
 }

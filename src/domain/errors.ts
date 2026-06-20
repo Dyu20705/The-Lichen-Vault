@@ -36,6 +36,25 @@ export class MigrationError extends DomainError {
   }
 }
 
+export class StorageCorruptionError extends DomainError {
+  constructor(
+    message: string,
+    public readonly storageKey: string,
+    public readonly rawPayload: string | null,
+    public readonly reason: string,
+    public readonly recoverability: "recoverable" | "unrecoverable" = "recoverable"
+  ) {
+    super(message, "STORAGE_CORRUPTION_ERROR");
+  }
+}
+
+export class TransactionRollbackError extends StorageError {
+  constructor(message: string, public readonly originalError?: unknown, public readonly rollbackError?: unknown) {
+    super(message, originalError);
+    this.name = "TransactionRollbackError";
+  }
+}
+
 export class PolicyError extends DomainError {
   constructor(message: string) {
     super(message, "POLICY_VIOLATION");
