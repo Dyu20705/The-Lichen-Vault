@@ -49,6 +49,15 @@ type JsonVault = {
   proposals: InterventionProposal[];
 };
 
+export type JsonVaultImportData = {
+  specimen: Specimen;
+  events: SpecimenEvent[];
+  evidence: EvidenceRecord[];
+  workflows: WorkflowSession[];
+  traces: TraceEvent[];
+  proposals: InterventionProposal[];
+};
+
 function emptyVault(): JsonVault {
   return {
     schemaVersion: CURRENT_FILE_SCHEMA_VERSION,
@@ -74,6 +83,10 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function sameContent(left: unknown, right: unknown): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
 export function scrubPersistentValue<T>(value: T): T {
   if (Array.isArray(value)) return value.map((item) => scrubPersistentValue(item)) as T;
   if (value && typeof value === "object") {
@@ -96,7 +109,7 @@ function assertUnique<T>(items: T[], idFor: (item: T) => string, label: string):
   }
 }
 
-function validateVault(vault: JsonVault): JsonVault {
+function validateVault(vault: JsonVault, options: { strictCrossReferences?: boolean } = {}): JsonVault {
   assertUnique(vault.specimens, (item) => item.id, "specimen");
   assertUnique(vault.events, (item) => item.id, "event");
   assertUnique(vault.evidence, (item) => item.id, "evidence");
@@ -117,8 +130,63 @@ function validateVault(vault: JsonVault): JsonVault {
   for (const proposal of vault.proposals as InterventionProposal[]) {
     assertProposalEvidence(vault, proposal);
   }
+  if (options.strictCrossReferences) {
+    assertVaultCrossReferences(vault);
+  }
 
   return vault;
+}
+
+function assertEvidenceIdsResolve(vault: JsonVault, specimenId: string, evidenceIds: string[], label: string): void {
+  const evidence = evidenceIds.map((id) => vault.evidence.find((item) => item.id === id) ?? null);
+  const missing = evidenceIds.filter((_, index) => evidence[index] === null);
+  if (missing.length > 0) throw new StorageError(`${label} references missing evidence: ${missing.join(", ")}`);
+  if (evidence.some((item) => item && item.specimenId !== specimenId)) {
+    throw new StorageError(`${label} evidence references must belong to the same specimen.`);
+  }
+}
+
+function assertVaultCrossReferences(vault: JsonVault): void {
+  const specimenIds = new Set(vault.specimens.map((item) => item.id));
+  const eventById = new Map(vault.events.map((item) => [item.id, item]));
+  const traceById = new Map(vault.traces.map((item) => [item.id, item]));
+
+  for (const specimen of vault.specimens) {
+    const missingEvents = specimen.eventIds.filter((id) => !eventById.has(id));
+    if (missingEvents.length > 0) throw new StorageError(`Specimen ${specimen.id} references missing events: ${missingEvents.join(", ")}`);
+    const wrongEvents = specimen.eventIds
+      .map((id) => eventById.get(id))
+      .filter((item): item is SpecimenEvent => !!item && item.specimenId !== specimen.id);
+    if (wrongEvents.length > 0) throw new StorageError(`Specimen ${specimen.id} event references must belong to the same specimen.`);
+  }
+
+  for (const event of vault.events) {
+    if (!specimenIds.has(event.specimenId)) throw new StorageError(`Event ${event.id} references missing specimen ${event.specimenId}.`);
+    assertEvidenceIdsResolve(vault, event.specimenId, event.evidenceIds, `Event ${event.id}`);
+  }
+
+  for (const evidence of vault.evidence) {
+    if (!specimenIds.has(evidence.specimenId)) throw new StorageError(`Evidence ${evidence.id} references missing specimen ${evidence.specimenId}.`);
+  }
+
+  for (const workflow of vault.workflows) {
+    if (!specimenIds.has(workflow.specimenId)) throw new StorageError(`Workflow ${workflow.id} references missing specimen ${workflow.specimenId}.`);
+    const missingTraces = workflow.traceIds.filter((id) => !traceById.has(id));
+    if (missingTraces.length > 0) throw new StorageError(`Workflow ${workflow.id} references missing traces: ${missingTraces.join(", ")}`);
+    const wrongTraces = workflow.traceIds
+      .map((id) => traceById.get(id))
+      .filter((item): item is TraceEvent => !!item && (item.workflowId !== workflow.id || item.specimenId !== workflow.specimenId));
+    if (wrongTraces.length > 0) throw new StorageError(`Workflow ${workflow.id} trace references must belong to the same workflow and specimen.`);
+  }
+
+  for (const trace of vault.traces) {
+    if (!specimenIds.has(trace.specimenId)) throw new StorageError(`Trace ${trace.id} references missing specimen ${trace.specimenId}.`);
+    assertEvidenceIdsResolve(vault, trace.specimenId, [...trace.inputEvidenceIds, ...trace.outputEvidenceIds], `Trace ${trace.id}`);
+  }
+
+  for (const proposal of vault.proposals) {
+    if (!specimenIds.has(proposal.specimenId)) throw new StorageError(`Proposal ${proposal.id} references missing specimen ${proposal.specimenId}.`);
+  }
 }
 
 function assertSpecimenObservationEvidence(vault: JsonVault, specimen: Specimen): void {
@@ -151,6 +219,7 @@ function assertProposalEvidence(vault: JsonVault, proposal: InterventionProposal
 
 export class JsonFileSpecimenRepository implements SpecimenRepository {
   readonly filePath: string;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(filePath: string) {
     this.filePath = path.resolve(filePath);
@@ -302,10 +371,29 @@ export class JsonFileSpecimenRepository implements SpecimenRepository {
       .map((item) => deepClone(item as InterventionProposal));
   }
 
-  private async updateVault(mutator: (vault: JsonVault) => void): Promise<void> {
-    const vault = await this.readVault();
-    mutator(vault);
-    await this.writeVault(validateVault(JsonVaultSchema.parse(scrubPersistentValue(vault)) as unknown as JsonVault));
+  async importVaultData(data: JsonVaultImportData): Promise<void> {
+    const parsed = this.parseImportData(data);
+    await this.updateVault((vault) => {
+      mergeUnique(vault.evidence, parsed.evidence, (item) => item.id, "evidence");
+      mergeUnique(vault.specimens, [parsed.specimen], (item) => item.id, "specimen");
+      mergeUnique(vault.events, parsed.events, (item) => item.id, "event");
+      mergeUnique(vault.workflows, parsed.workflows, (item) => item.id, "workflow");
+      mergeUnique(vault.traces, parsed.traces, (item) => item.id, "trace");
+      mergeUnique(vault.proposals, parsed.proposals, (item) => item.id, "proposal");
+      vault.evidence = vault.evidence.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id));
+      vault.events = vault.events.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id));
+      vault.workflows = vault.workflows.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt) || a.id.localeCompare(b.id));
+      vault.traces = vault.traces.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id));
+      vault.proposals = vault.proposals.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id));
+    }, { strictCrossReferences: true });
+  }
+
+  private async updateVault(mutator: (vault: JsonVault) => void, options: { strictCrossReferences?: boolean } = {}): Promise<void> {
+    await this.withMutationLock(async () => {
+      const vault = await this.readVault();
+      mutator(vault);
+      await this.writeVault(validateVault(JsonVaultSchema.parse(scrubPersistentValue(vault)) as unknown as JsonVault, options));
+    });
   }
 
   private async readVault(): Promise<JsonVault> {
@@ -328,14 +416,101 @@ export class JsonFileSpecimenRepository implements SpecimenRepository {
 
   private async writeVault(vault: JsonVault): Promise<void> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    const unique = `${process.pid}.${Date.now()}.${Math.floor(Math.random() * 1_000_000)}`;
+    const tempPath = `${this.filePath}.${unique}.tmp`;
+    const backupPath = `${this.filePath}.${unique}.bak`;
     const payload = `${JSON.stringify(vault, null, 2)}\n`;
+    let backupCreated = false;
     try {
       await fs.writeFile(tempPath, payload, { encoding: "utf8", flag: "wx" });
-      await fs.rename(tempPath, this.filePath);
+      try {
+        await fs.rename(tempPath, this.filePath);
+      } catch (renameError) {
+        const code = (renameError as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST" && code !== "EPERM") throw renameError;
+        try {
+          await fs.rename(this.filePath, backupPath);
+          backupCreated = true;
+        } catch (backupError) {
+          if ((backupError as NodeJS.ErrnoException).code !== "ENOENT") throw backupError;
+        }
+        try {
+          await fs.rename(tempPath, this.filePath);
+          if (backupCreated) await fs.rm(backupPath, { force: true });
+        } catch (replaceError) {
+          if (backupCreated) {
+            await fs.rename(backupPath, this.filePath).catch(() => {});
+          }
+          throw replaceError;
+        }
+      }
     } catch (error) {
       await fs.rm(tempPath, { force: true }).catch(() => {});
+      if (backupCreated) await fs.rm(backupPath, { force: true }).catch(() => {});
       throw new StorageError(`Could not atomically write MCP vault file ${this.filePath}.`, error);
     }
+  }
+
+  private async withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutationQueue;
+    let release!: () => void;
+    this.mutationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  private parseImportData(data: JsonVaultImportData): JsonVaultImportData {
+    const scrubbed = scrubPersistentValue(data);
+    const parsed: JsonVaultImportData = {
+      specimen: SpecimenSchema.parse(scrubbed.specimen) as Specimen,
+      events: scrubbed.events.map((item) => SpecimenEventSchema.parse(item) as SpecimenEvent),
+      evidence: scrubbed.evidence.map((item) => EvidenceRecordSchema.parse(item) as EvidenceRecord),
+      workflows: scrubbed.workflows.map((item) => WorkflowSessionSchema.parse(item) as WorkflowSession),
+      traces: scrubbed.traces.map((item) => TraceEventSchema.parse(item) as TraceEvent),
+      proposals: scrubbed.proposals.map((item) => InterventionProposalSchema.parse(item) as InterventionProposal)
+    };
+    validateSpecimen(parsed.specimen);
+    parsed.events.forEach(validateSpecimenEvent);
+    parsed.evidence.forEach(validateEvidenceRecord);
+    parsed.workflows.forEach(validateWorkflowSession);
+    parsed.traces.forEach(validateTraceEvent);
+    parsed.proposals.forEach(validateInterventionProposal);
+    validateVault({
+      schemaVersion: CURRENT_FILE_SCHEMA_VERSION,
+      specimens: [parsed.specimen],
+      events: parsed.events,
+      evidence: parsed.evidence,
+      workflows: parsed.workflows,
+      traces: parsed.traces,
+      proposals: parsed.proposals
+    }, { strictCrossReferences: true });
+    return parsed;
+  }
+}
+
+function mergeUnique<T>(target: T[], incoming: T[], idFor: (item: T) => string, label: string): void {
+  const index = new Map(target.map((item) => [idFor(item), item]));
+  const incomingSeen = new Map<string, T>();
+  for (const item of incoming) {
+    const id = idFor(item);
+    const duplicateInImport = incomingSeen.get(id);
+    if (duplicateInImport && !sameContent(duplicateInImport, item)) {
+      throw new StorageError(`Import contains conflicting duplicate ${label} id ${id}.`);
+    }
+    incomingSeen.set(id, item);
+
+    const existing = index.get(id);
+    if (existing) {
+      if (!sameContent(existing, item)) throw new StorageError(`${label} id ${id} already exists with different content.`);
+      continue;
+    }
+    target.push(item);
+    index.set(id, item);
   }
 }

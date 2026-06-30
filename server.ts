@@ -235,6 +235,43 @@ Return JSON matching the output schema. evidenceIds must be real ids from the ev
   });
 }
 
+function extractJsonObject(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) return extractJsonObject(fenced[1]);
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return trimmed.slice(start, end + 1);
+  return null;
+}
+
+function extractEventText(event: unknown): string[] {
+  const texts: string[] = [];
+  const stringified = stringifyContent(event as Parameters<typeof stringifyContent>[0]);
+  if (stringified) texts.push(stringified);
+  const content = (event as { content?: { parts?: Array<{ text?: string }> } })?.content;
+  for (const part of content?.parts ?? []) {
+    if (typeof part.text === "string" && part.text.trim()) texts.push(part.text);
+  }
+  return texts;
+}
+
+function parseArchivistOutput(candidates: string[]): { text: string; evidenceIds: string[] } {
+  for (const candidate of [...candidates].reverse()) {
+    const json = extractJsonObject(candidate);
+    if (!json) continue;
+    try {
+      return ArchivistModelOutputSchema.parse(JSON.parse(json));
+    } catch {
+      // Keep looking; ADK event streams can contain intermediate user/tool text.
+    }
+  }
+  if (candidates.length === 0) throw new Error("model_returned_empty_content");
+  throw new Error("model_returned_unparseable_json");
+}
+
 async function runAdkArchivist(request: ArchivistRequest, signal: AbortSignal): Promise<{ text: string; evidenceIds: string[] }> {
   if (!modelConfigured()) {
     throw new Error("model_not_configured");
@@ -246,7 +283,7 @@ async function runAdkArchivist(request: ArchivistRequest, signal: AbortSignal): 
     agent: createArchivistAgent(request)
   });
 
-  let finalText = "";
+  const textCandidates: string[] = [];
   for await (const event of runner.runEphemeral({
     userId: "local_curator",
     newMessage: {
@@ -264,17 +301,17 @@ async function runAdkArchivist(request: ArchivistRequest, signal: AbortSignal): 
     }
   })) {
     if (signal.aborted) throw new Error("model_timeout");
-    finalText = stringifyContent(event) || finalText;
+    textCandidates.push(...extractEventText(event));
   }
 
-  const parsed = ArchivistModelOutputSchema.parse(JSON.parse(finalText));
-  return parsed;
+  return parseArchivistOutput(textCandidates);
 }
 
 function isRetryableModelError(error: unknown): boolean {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   if (message.includes("model_not_configured")) return false;
   if (message.includes("model_referenced_missing_evidence")) return false;
+  if (message.includes("model_returned_empty_content")) return true;
   if (message.includes("invalid") || message.includes("schema") || message.includes("json")) return false;
   return message.includes("timeout") || message.includes("fetch") || message.includes("network") || message.includes("rate") || message.includes("temporar");
 }

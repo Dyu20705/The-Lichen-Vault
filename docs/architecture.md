@@ -38,7 +38,7 @@ When a model key is absent, the model times out, the output is invalid, or cited
 `SpecimenRepository` covers specimens, events, evidence, workflows, traces, and intervention proposals.
 
 - `LocalStorageSpecimenRepository` stores validated browser data in versioned envelopes and preserves corrupt payloads for recovery.
-- `JsonFileSpecimenRepository` stores the standalone MCP vault in a schema-validated JSON file, scrubs forbidden sensitive fields, rejects corrupt or unsupported data, and writes through a staged temporary file replacement.
+- `JsonFileSpecimenRepository` stores the standalone MCP vault in a schema-validated JSON file, scrubs forbidden sensitive fields, rejects corrupt or unsupported data, serializes in-process mutations through a write queue, and writes through a staged temporary file replacement.
 - `InMemorySpecimenRepository` supports deterministic tests.
 
 Browser storage and MCP storage are intentionally separate. The bridge is explicit:
@@ -46,6 +46,8 @@ Browser storage and MCP storage are intentionally separate. The bridge is explic
 ```bash
 npm run mcp:import -- ./path/to/lichen-vault-export.json --data ./data/mcp-vault.json
 ```
+
+MCP import is atomic for the JSON-file repository: the importer validates and scrubs the complete export, merges entities idempotently in memory, rejects conflicting duplicate IDs or broken cross-references, validates the final vault, and writes the file once. Failed imports leave the original file unchanged.
 
 ## Evidence And Traces
 

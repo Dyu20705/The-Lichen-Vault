@@ -1,14 +1,7 @@
 import fs from "fs/promises";
 import { z } from "zod";
 import { JsonFileSpecimenRepository, scrubPersistentValue } from "../infrastructure/persistence/jsonFileSpecimenRepository";
-import {
-  EvidenceRecord,
-  InterventionProposal,
-  Specimen,
-  SpecimenEvent,
-  TraceEvent,
-  WorkflowSession
-} from "../domain";
+import { EvidenceRecord, InterventionProposal, Specimen, SpecimenEvent, TraceEvent, WorkflowSession } from "../domain";
 import {
   EvidenceRecordSchema,
   InterventionProposalSchema,
@@ -51,12 +44,14 @@ export async function importVaultExport(params: {
   const parsed = BrowserOrMcpExportSchema.parse(scrubPersistentValue(JSON.parse(raw)));
   const specimen = parsed.specimen as Specimen;
 
-  for (const evidence of parsed.evidence as EvidenceRecord[]) await params.repository.appendEvidence(evidence);
-  await params.repository.saveSpecimen(specimen);
-  for (const event of parsed.events as SpecimenEvent[]) await params.repository.appendEvent(event);
-  for (const workflow of parsed.workflows as WorkflowSession[]) await params.repository.saveWorkflow(workflow);
-  for (const trace of parsed.traces as TraceEvent[]) await params.repository.appendTrace(trace);
-  for (const proposal of parsed.proposals as InterventionProposal[]) await params.repository.saveProposal(proposal);
+  await params.repository.importVaultData({
+    specimen,
+    events: parsed.events as SpecimenEvent[],
+    evidence: parsed.evidence as EvidenceRecord[],
+    workflows: parsed.workflows as WorkflowSession[],
+    traces: parsed.traces as TraceEvent[],
+    proposals: parsed.proposals as InterventionProposal[]
+  });
 
   return {
     specimenId: specimen.id,

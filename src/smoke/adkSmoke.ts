@@ -96,7 +96,8 @@ try {
     status: "passed",
     result: body.generatedBy === "gemini" && body.verificationStatus === "grounded" ? "grounded" : "local_fallback",
     evidenceIds: body.evidenceIds ?? [],
-    model: body.model
+    model: body.model,
+    fallbackReason: body.fallbackReason
   }, null, 2));
 } catch (error) {
   console.error(JSON.stringify({

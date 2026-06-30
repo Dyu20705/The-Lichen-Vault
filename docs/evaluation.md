@@ -14,7 +14,7 @@ It uses fake model injection, local repositories, isolated localStorage shims, o
 - Deterministic workflow tests: successful three-breath workflow, invalid breath counts, deterministic seed/growth reproduction, model unavailable fallback, timeout fallback, invalid response fallback, nonexistent evidence citation fallback, raw audio exclusion.
 - Storage tests: corrupt browser storage, unsupported storage versions, duplicate evidence ids, rollback behavior, JSON-file MCP persistence, corrupt MCP vault rejection.
 - Operational endpoint tests: safe `/health`, redacted logs, no-key fallback, request validation, rate limiting.
-- MCP integration tests: tool schemas, imported browser exports, repeated import idempotency, persisted reads, proposal creation, trusted-action denial, persisted policy failure traces, export redaction.
+- MCP integration tests: tool schemas, imported browser exports, atomic import rollback, repeated import idempotency, concurrent JSON-file writes, persisted reads, proposal creation, trusted-action denial, persisted policy failure traces, export redaction.
 - Optional real-model smoke: `npm run smoke:adk`.
 
 ## Scenario Matrix
@@ -32,6 +32,8 @@ It uses fake model injection, local repositories, isolated localStorage shims, o
 | Export without trusted confirmation | Policy rejection and failed MCP trace when specimen context exists. |
 | Repeated approval/import | Idempotent, no duplicate event or record. |
 | MCP import bridge | Versioned export validates and becomes readable through MCP tools. |
+| Failed MCP import | Original JSON vault bytes remain unchanged. |
+| Concurrent JSON-file writes | In-process mutation queue preserves all valid records. |
 | Health endpoint | Safe status only, no sensitive values. |
 
 ## Optional Real-Model Smoke

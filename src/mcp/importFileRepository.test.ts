@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
+import { EvidenceRecord } from "../domain";
 import { JsonFileSpecimenRepository } from "../infrastructure/persistence/jsonFileSpecimenRepository";
 import { createVaultTools, McpToolResult } from "./vaultTools";
 import { importVaultExport } from "./importExport";
@@ -186,5 +187,113 @@ describe("MCP JSON file repository import bridge", () => {
     expect(traces.some((trace) => trace.operation === "MCP Approve Intervention" && trace.status === "failed")).toBe(true);
     expect(traces.some((trace) => trace.operation === "MCP Export Specimen" && trace.status === "failed")).toBe(true);
     expect(JSON.stringify(traces)).not.toContain("untrusted-token");
+  });
+
+  it("rejects late trace failures without persisting earlier import records", async () => {
+    const vaultPath = await tempPath("vault.json");
+    const repo = new JsonFileSpecimenRepository(vaultPath);
+    const exportPath = await tempPath("export.json");
+    await fs.writeFile(exportPath, JSON.stringify(browserExport()), "utf8");
+    await importVaultExport({ exportPath, repository: repo });
+    const originalBytes = await fs.readFile(vaultPath, "utf8");
+
+    const broken = browserExport();
+    broken.specimen.id = "sp_late_trace_failure";
+    broken.specimen.observations = [];
+    broken.specimen.eventIds = [];
+    broken.evidence = [];
+    broken.events = [];
+    broken.workflows = [];
+    broken.traces = [{
+      id: "tr_late_missing_evidence",
+      workflowId: "wf_late_trace_failure",
+      specimenId: "sp_late_trace_failure",
+      timestamp: "2026-06-30T00:00:03.000Z",
+      actor: "tool",
+      operation: "MCP Import Trace",
+      status: "failed",
+      inputEvidenceIds: ["ev_missing_late"],
+      outputEvidenceIds: [],
+      durationMs: 0,
+      summary: "This trace should make the atomic import fail."
+    }];
+    broken.proposals = [];
+    const brokenPath = await tempPath("broken-trace-export.json");
+    await fs.writeFile(brokenPath, JSON.stringify(broken), "utf8");
+
+    await expect(importVaultExport({ exportPath: brokenPath, repository: repo })).rejects.toThrow("missing evidence");
+    expect(await fs.readFile(vaultPath, "utf8")).toBe(originalBytes);
+    expect(await repo.getSpecimen("sp_late_trace_failure")).toBeNull();
+  });
+
+  it("rejects late proposal failures without changing the original vault bytes", async () => {
+    const vaultPath = await tempPath("vault.json");
+    const repo = new JsonFileSpecimenRepository(vaultPath);
+    const exportPath = await tempPath("export.json");
+    await fs.writeFile(exportPath, JSON.stringify(browserExport()), "utf8");
+    await importVaultExport({ exportPath, repository: repo });
+    const originalBytes = await fs.readFile(vaultPath, "utf8");
+
+    const broken = browserExport();
+    broken.specimen.id = "sp_late_proposal_failure";
+    broken.specimen.observations = [];
+    broken.specimen.eventIds = [];
+    broken.evidence = [];
+    broken.events = [];
+    broken.workflows = [];
+    broken.traces = [];
+    broken.proposals = [{
+      id: "pr_late_missing_evidence",
+      specimenId: "sp_late_proposal_failure",
+      action: "export_data",
+      params: { action: "export_data", payload: {} },
+      evidenceIds: ["ev_missing_late"],
+      reason: "This proposal should make the atomic import fail.",
+      heuristicConfidence: 0.63,
+      proposedBy: "system",
+      riskLevel: "high",
+      status: "pending",
+      createdAt: "2026-06-30T00:00:03.000Z"
+    }];
+    const brokenPath = await tempPath("broken-proposal-export.json");
+    await fs.writeFile(brokenPath, JSON.stringify(broken), "utf8");
+
+    await expect(importVaultExport({ exportPath: brokenPath, repository: repo })).rejects.toThrow("Missing evidence");
+    expect(await fs.readFile(vaultPath, "utf8")).toBe(originalBytes);
+    expect(await repo.getSpecimen("sp_late_proposal_failure")).toBeNull();
+  });
+
+  it("rejects conflicting duplicate content atomically", async () => {
+    const vaultPath = await tempPath("vault.json");
+    const repo = new JsonFileSpecimenRepository(vaultPath);
+    const exportPath = await tempPath("export.json");
+    await fs.writeFile(exportPath, JSON.stringify(browserExport()), "utf8");
+    await importVaultExport({ exportPath, repository: repo });
+    const originalBytes = await fs.readFile(vaultPath, "utf8");
+
+    const conflicting = browserExport() as ReturnType<typeof browserExport> & { evidence: Array<{ payload: Record<string, unknown> }> };
+    conflicting.evidence[0].payload = { seed: 999, retained: "changed" } as unknown as Record<string, unknown> & { seed: number; nested: { apiKey: string; retained: string } };
+    const conflictPath = await tempPath("conflict-export.json");
+    await fs.writeFile(conflictPath, JSON.stringify(conflicting), "utf8");
+
+    await expect(importVaultExport({ exportPath: conflictPath, repository: repo })).rejects.toThrow("already exists with different content");
+    expect(await fs.readFile(vaultPath, "utf8")).toBe(originalBytes);
+    expect((await repo.getEvidence("ev_imported_growth"))?.payload).toMatchObject({ seed: 20705 });
+  });
+
+  it("serializes concurrent JSON repository mutations without losing writes", async () => {
+    const repo = new JsonFileSpecimenRepository(await tempPath("vault.json"));
+    const records: EvidenceRecord[] = Array.from({ length: 20 }, (_, index) => ({
+      id: `ev_concurrent_${index}`,
+      specimenId: "sp_concurrent",
+      sourceType: "growth_simulation",
+      timestamp: new Date(Date.UTC(2026, 5, 30, 0, 0, index)).toISOString(),
+      payload: { index },
+      schemaVersion: 1
+    }));
+
+    await Promise.all(records.map((record) => repo.appendEvidence(record)));
+
+    expect((await repo.listEvidence("sp_concurrent")).map((item) => item.id)).toEqual(records.map((item) => item.id));
   });
 });
