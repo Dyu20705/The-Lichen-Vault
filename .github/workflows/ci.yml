@@ -7,6 +7,10 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,6 +29,15 @@ jobs:
 
       - name: Test
         run: npm run test
+
+      - name: Evaluation
+        run: npm run eval
+
+      - name: MCP seed
+        run: npm run mcp:seed
+
+      - name: MCP check
+        run: npm run mcp:check
 
       - name: Build
         run: npm run build

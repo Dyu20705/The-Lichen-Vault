@@ -5,7 +5,7 @@
 <h1 align="center">The Lichen Vault</h1>
 
 <p align="center">
-  A breath-driven digital herbarium and Capstone foundation for privacy-preserving specimen agents.
+  A fictional, privacy-preserving digital herbarium for breath-derived procedural specimens.
 </p>
 
 <p align="center">
@@ -15,7 +15,9 @@
   <img alt="Validation" src="https://img.shields.io/badge/Zod-runtime%20schemas-10b981?style=for-the-badge" />
 </p>
 
-The Lichen Vault turns a three-breath deposition ritual into a persistent procedural lichen specimen. The current checkpoint keeps the original museum-cabinet experience while adding a real evidence-grounded agent workflow, trace inspection, human approval controls, ADK-backed Archivist integration, and a Vault MCP surface.
+The Lichen Vault turns a three-breath ritual into a deterministic procedural lichen specimen, stores it locally in the browser, and records evidence, events, workflow traces, and human-in-the-loop policy decisions. It is best classified for the capstone as **Freestyle**.
+
+The system demonstrates a **hybrid agentic workflow**: deterministic Signal Curator, Growth Simulator, policy, and persistence actors coordinate with an optional ADK-backed Archivist agent. It is not described as a full multi-agent system.
 
 ## Preview
 
@@ -31,53 +33,37 @@ Most generative demos stop at the moment of creation. This project explores the 
 
 - Three-step breath capture ritual with microphone input and simulated fallback.
 - Deterministic Canvas 2D lichen renderer using seeded growth parameters.
-- Canonical `Specimen` domain model with `LichenOrganism` retained only as a compatibility alias.
-- Runtime Zod validation on storage reads, migration output, specimen writes, event writes, and the observation API request body.
-- Local vault persistence through `LocalStorageSpecimenRepository` instead of raw app-level `localStorage` parsing.
-- Legacy record migration with deterministic missing seed/time derivation.
-- Corruption recovery UI that exposes the failed key, reason, raw payload, retry, copy, ignore, and explicit reset paths.
-- Event ledger support with idempotent duplicate appends and deterministic ordering.
+- Canonical `Specimen` domain model with `LichenOrganism` retained as a compatibility alias.
+- Runtime Zod validation on storage reads, migration output, specimen writes, event writes, evidence records, traces, proposals, and model endpoint payloads.
+- Local vault persistence through `LocalStorageSpecimenRepository`, including corrupt-storage recovery that preserves raw payloads for the user.
 - Evidence-grounded Archivist observations through a controlled ADK adapter, with local fallback when no key is configured or model output fails validation.
-- Persisted workflow sessions, trace events, evidence records, and intervention proposals.
-- Human approval panel for high-risk proposals; approval/rejection is idempotent and cannot be performed by an agent context.
-- Vault MCP stdio server with schema-validated tools and policy-protected writes.
+- Persisted workflow sessions, trace events, evidence records, event ledger entries, and intervention proposals.
+- Human approval panel for high-risk proposals; approval/rejection is idempotent and cannot be performed by an agent or tool context.
+- Vault MCP stdio server backed by a schema-validated JSON file repository and an explicit browser export/import bridge.
 - Safe `/health` endpoint, structured redacted server logs, bounded model retries, model request timeout, and configurable rate limiting for model-backed endpoints.
 
-## Completed Architecture
+## Architecture Flow
 
-The current foundation includes modular domain entities for specimens, evidence records, episodic events, traces, workflows, and intervention proposals. Repository interfaces decouple the React app from storage details, while the localStorage implementation uses a v2 envelope and keeps compatibility with the original array-based records.
+```text
+Breath capture
+-> Signal Curator
+-> evidence persistence
+-> deterministic Growth Simulator
+-> ADK Archivist
+-> policy validation
+-> events and traces
+-> human decision
+-> optional consent-based export
+-> MCP import and inspection
+```
 
-Persistence uses a transaction-like staged write with rollback across specimen snapshots and event records. Browser storage cannot provide true multi-key atomicity, so the implementation validates first, captures previous values, writes both stores, verifies the result, and restores previous values if a staged write fails.
-
-## Agent Workflow
-
-The implemented vertical slice is:
-
-Capture or simulation -> Signal Curator -> evidence persistence -> Growth Simulator -> Archivist Agent -> policy validation -> event persistence -> trace persistence -> UI update.
-
-Signal curation, quality checks, seed generation, growth simulation, policy, persistence, migration, and evidence validation are deterministic. The LLM is used only by the Archivist to write a short museum-style observation from persisted evidence. If ADK/model access is missing, fails, times out, returns invalid output, or cites nonexistent evidence, the workflow writes a local fallback observation and a fallback trace. Retry is bounded and reserved for retryable transient failures.
-
-## Domain And Persistence
-
-`Specimen` is the canonical persisted domain entity. Legacy observations are not upgraded into false certainty:
-
-- `gemini` observations require real evidence ids and `grounded` verification; confidence remains `null` unless a transparent heuristic is explicitly supplied.
-- `local_fallback` observations may omit evidence and are marked `fallback`.
-- `legacy_unverified` observations preserve original text with empty evidence, `null` confidence, and `unverified` status.
-
-Migration is deterministic and idempotent: the same legacy record produces the same specimen, already migrated specimens are accepted without destructive transformation, malformed JSON raises a typed recovery error, and unsupported future versions fail safely.
-
-## Privacy
-
-Specimens are stored locally in the browser under The Lichen Vault storage keys. Breath audio is not uploaded; the microphone stream is used client-side to derive simple duration, intensity, and cadence metrics during the ritual.
-
-`GEMINI_API_KEY` is optional. Without it, the app remains functional through local fallback observation text. When Gemini is enabled, the server sends only bounded specimen context and persisted evidence summaries to `/api/archivist/observe`. Raw microphone audio is never uploaded, logged, or sent to a model.
+Raw audio is never uploaded or persisted. The app derives duration, intensity, and cadence metrics locally. Normal operation works without `GEMINI_API_KEY` or `GOOGLE_API_KEY`; the Archivist step falls back to local text when model access is unavailable, times out, or returns invalid or ungrounded output.
 
 ## Requirements
 
 - Node.js 20 or newer
 - npm 10 or newer
-- Optional Gemini API key for AI-generated archival observations
+- Optional `GEMINI_API_KEY` or `GOOGLE_API_KEY` for real ADK Archivist calls
 
 ## Development Setup
 
@@ -89,36 +75,25 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-## Environment Variables
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `GEMINI_API_KEY` | No | Enables Gemini-generated observation entries. Without it, the server returns local fallback entries. |
-| `GOOGLE_API_KEY` | No | Alternative model key accepted by the ADK runtime. |
-| `GEMINI_MODEL` | No | Model identifier for the Archivist agent. Defaults to `gemini-2.5-flash`. |
-| `MODEL_TIMEOUT_MS` | No | Per-model-call timeout. Defaults to `8000`. |
-| `MAX_MODEL_ATTEMPTS` | No | Bounded model attempts. Defaults to `2`; deterministic validation/config failures are not retried. |
-| `MODEL_RATE_LIMIT_WINDOW_MS` | No | Rate-limit window for model-backed endpoints when a model key is configured. Defaults to `60000`. |
-| `MODEL_RATE_LIMIT_MAX` | No | Maximum model-backed requests per window when a model key is configured. Defaults to `12`. |
-| `APP_URL` | No | Public app URL for deployments that need self-referential links. |
-
-Cloud Run secrets and service URLs should be injected through deployment configuration. `.env.example` contains placeholders only.
-
 ## Scripts
 
 ```bash
 npm run dev            # Start the Express + Vite development server
 npm run lint           # Type-check the project
-npm run test           # Run Vitest tests
-npm run eval           # Run fake-model workflow, MCP, and operational evaluation tests
+npm run test           # Run the deterministic Vitest suite
+npm run eval           # Run workflow, operational, MCP, and import bridge tests
+npm run mcp:seed       # Create deterministic JSON-file MCP data
+npm run mcp:check      # Dry-run MCP tool registration
 npm run mcp:dev        # Start the Vault MCP stdio server
-npm run mcp:check      # Dry-run the MCP server and list exposed tools
+npm run mcp:import -- ./path/to/lichen-vault-export.json
 npm run build          # Build the client and bundled production server
 npm run start          # Serve the production build from dist/
 npm run preview        # Build, then start the production server
-npm run release:check  # Run lint, tests, and build
-npm run clean          # Remove generated local build artifacts
+npm run release:check  # Run deterministic release gate
+npm run smoke:adk      # Optional real-model smoke; skips safely without a key
 ```
+
+`release:check` runs lint, tests, eval, deterministic MCP seed, MCP check, and build. It does not require Gemini credentials.
 
 ## Production Build
 
@@ -131,18 +106,52 @@ The production server serves `dist/`, falls back to `index.html` for SPA routes,
 
 Model-backed endpoints emit structured JSON logs with request ids, workflow ids when available, operation, status, duration/fallback fields, and redacted error context. Model rate limiting applies only when a real model key is configured, so the no-key local fallback path remains available for development and demos.
 
-## Vault MCP Server
+## Browser Storage And MCP Persistence
 
-The Vault MCP server runs as a separate stdio process:
+The browser app remains local-first and stores specimens in validated browser storage. The standalone MCP process uses a Node-compatible JSON file repository (`JsonFileSpecimenRepository`) configured by:
 
 ```bash
-npm run mcp:check
-npm run mcp:dev
+MCP_VAULT_PATH=./data/mcp-vault.json
+npm run mcp:dev -- --data ./data/mcp-vault.json
 ```
 
-It exposes schema-validated tools for specimen reads, event/evidence/trace reads, fallback observation appends, intervention proposals, trusted approval/rejection, and versioned specimen export. Direct destructive tools such as `delete_specimen` are intentionally absent.
+Browser data reaches MCP only through an explicit consent-based export from the UI followed by:
 
-Approval, rejection, and export require an application-controlled trusted action validator. The default standalone stdio server exposes the schemas but does not grant autonomous approval authority by itself; callers must integrate a separate human-confirmation boundary before those actions can succeed.
+```bash
+npm run mcp:import -- ./path/to/lichen-vault-export.json --data ./data/mcp-vault.json
+```
+
+The importer validates versioned exports, scrubs sensitive fields, merges records idempotently in memory, rejects conflicting duplicate IDs, validates cross-references, and writes the JSON vault once through staged replacement. Failed imports leave the original vault file unchanged.
+
+## Vault MCP Server
+
+The MCP server exposes schema-validated tools:
+
+- `list_specimens`
+- `get_specimen`
+- `get_specimen_events`
+- `get_evidence`
+- `get_workflow_traces`
+- `append_observation`
+- `propose_intervention`
+- `approve_intervention`
+- `reject_intervention`
+- `export_specimen`
+
+Approval, rejection, and export require an application-controlled trusted-action validator. The default standalone server can inspect and propose, but it does not grant autonomous approval authority.
+
+## Evaluation And Smoke Testing
+
+The default suite uses fake model behavior and local fixtures. It covers deterministic workflow success and failure, corrupt storage, unsupported versions, model fallback paths, missing evidence, duplicate evidence IDs, raw-audio exclusion, secret redaction, human approval boundaries, JSON-file MCP persistence, atomic import rollback, concurrent JSON repository writes, MCP policy rejection traces, production build behavior, and safe health output.
+
+`npm run smoke:adk` is opt-in:
+
+- `grounded`: the real model returned a valid schema and valid evidence citations.
+- `local_fallback`: the real model path was attempted but usable grounded output was not produced.
+- `skipped`: no key was configured.
+- `failed`: the endpoint or smoke implementation itself failed.
+
+The smoke command never prints API keys or full raw provider responses.
 
 ## Demo Flow
 
@@ -151,9 +160,15 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`, perform the three-breath ritual, then inspect the new specimen in the cabinet. The Trace panel shows persisted workflow steps. The Human Approval panel shows the high-risk export proposal; approving or rejecting it records an idempotent event and trace.
+Open `http://localhost:3000`, perform the three-breath ritual, then inspect the new specimen in the cabinet. The Trace panel shows persisted workflow steps. The Human Approval panel shows the high-risk export proposal; approving or rejecting it records an idempotent event and trace. After approval, the UI can prepare a versioned JSON export that may be imported into the MCP repository with `npm run mcp:import`.
 
-## Architecture And Evaluation Docs
+## Security Limitations
+
+The browser approval flow represents a local user-consent boundary, not production authentication. Timestamp nonces and client-created contexts are demo controls. Consent and execution remain separate: approval records a decision, while destructive execution tools are not exposed.
+
+The repository must never contain API keys, tokens, generated credentials, private data, raw breath audio, local MCP data files, logs, or environment files. `.env.example` contains placeholders only.
+
+## Documentation
 
 - `docs/architecture.md`
 - `docs/evaluation.md`
@@ -161,10 +176,24 @@ Open `http://localhost:3000`, perform the three-breath ritual, then inspect the 
 ## Limitations
 
 - Browser `localStorage` provides best-effort consistency only; the repository implements staged writes with rollback, not true database transactions.
-- The MCP stdio server uses an in-memory repository by default; browser localStorage remains the app's primary local-first store.
+- The MCP JSON-file repository uses an in-process mutation queue, not distributed locking.
 - The ADK Archivist adapter is server-side only. The primary test suite uses fake model behavior and does not require a real Gemini key.
 - Screenshots document the current visual experience; they are not an automated visual regression suite.
 
-## Project Evolution
+## Release Check
 
-The original MVP established the identity, breath ritual, renderer, vault inspection flow, optional Gemini fallback, and production-buildable Express/Vite server. This checkpoint preserves those strengths while replacing direct app-level storage access with validated domain repositories and explicit recovery behavior.
+Before treating the system as ready for human end-to-end verification, run:
+
+```bash
+npm ci
+npm run lint
+npm run test
+npm run eval
+npm run mcp:seed
+npm run mcp:check
+npm run build
+npm run release:check
+npm run smoke:adk
+```
+
+Do not report manual browser testing as complete unless the three-breath press-and-hold path was actually completed in a reliable browser session.

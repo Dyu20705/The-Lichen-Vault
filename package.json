@@ -12,10 +12,13 @@
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true})\"",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "eval": "vitest run src/application/workflow.evaluation.test.ts src/mcp/vaultTools.test.ts src/server.operational.test.ts",
+    "eval": "vitest run src/application/workflow.evaluation.test.ts src/mcp/vaultTools.test.ts src/mcp/importFileRepository.test.ts src/server.operational.test.ts",
     "mcp:dev": "tsx src/mcp/server.ts",
+    "mcp:import": "tsx src/mcp/import.ts",
+    "mcp:seed": "tsx src/mcp/seed.ts",
     "mcp:check": "tsx src/mcp/server.ts --check",
-    "release:check": "npm run lint && npm run test && npm run build"
+    "smoke:adk": "tsx src/smoke/adkSmoke.ts",
+    "release:check": "npm run lint && npm run test && npm run eval && npm run mcp:seed && npm run mcp:check && npm run build"
   },
   "keywords": [
     "react",

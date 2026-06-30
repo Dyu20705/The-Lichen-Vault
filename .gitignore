@@ -1,9 +1,12 @@
 node_modules/
 build/
 dist/
+data/
 coverage/
 .DS_Store
 *.log
+*.tmp
+*-vault-export-v*.json
 .env*
 !.env.example
 .agents/

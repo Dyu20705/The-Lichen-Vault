@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { InMemorySpecimenRepository } from "../infrastructure/persistence/inMemorySpecimenRepository";
+import { JsonFileSpecimenRepository } from "../infrastructure/persistence/jsonFileSpecimenRepository";
 import {
   AppendObservationSchema,
   createVaultTools,
@@ -14,8 +14,10 @@ import {
   TrustedDecisionSchema,
   VaultToolNames
 } from "./vaultTools";
+import { resolveMcpVaultPath } from "./config";
 
-const repo = new InMemorySpecimenRepository();
+const dataPath = resolveMcpVaultPath();
+const repo = new JsonFileSpecimenRepository(dataPath);
 const tools = createVaultTools(repo);
 
 function jsonContent(value: unknown) {
@@ -33,6 +35,7 @@ if (process.argv.includes("--check")) {
   console.log(JSON.stringify({
     ok: true,
     transport: "stdio",
+    dataPath,
     tools: VaultToolNames
   }, null, 2));
   process.exit(0);

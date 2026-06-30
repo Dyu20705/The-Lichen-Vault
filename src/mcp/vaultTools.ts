@@ -92,6 +92,16 @@ const VaultSpecimenExportSchema = z.object({
   specimen: SpecimenSchema,
   events: z.array(SpecimenEventSchema),
   evidence: z.array(EvidenceRecordSchema),
+  workflows: z.array(z.object({
+    id: z.string().min(1),
+    specimenId: z.string().min(1),
+    status: z.enum(["running", "completed", "failed"]),
+    startedAt: z.string().datetime(),
+    completedAt: z.string().datetime().optional(),
+    stepsCompleted: z.array(z.string()).default([]),
+    errors: z.array(z.string()).default([]),
+    traceIds: z.array(z.string()).default([])
+  })),
   traces: z.array(TraceEventSchema),
   proposals: z.array(InterventionProposalSchema)
 });
@@ -412,6 +422,7 @@ export function createVaultTools(repo: SpecimenRepository, options: VaultToolOpt
           specimen,
           events: await repo.listEvents(parsed.specimenId),
           evidence: await repo.listEvidence(parsed.specimenId),
+          workflows: await repo.listWorkflows(parsed.specimenId),
           traces: await repo.listTraces(parsed.specimenId),
           proposals: await repo.listProposals(parsed.specimenId)
         }));
@@ -446,16 +457,16 @@ export function createVaultTools(repo: SpecimenRepository, options: VaultToolOpt
     let specimenId = "unknown";
     let evidenceIds: string[] = [];
     const operation = decision === "approved" ? "MCP Approve Intervention" : "MCP Reject Intervention";
-    try {
-      const parsed = TrustedDecisionSchema.parse(input);
-      if (!await isTrusted(options, parsed, action)) {
-        throw new DomainError("Intervention decisions require application-controlled trusted user action context.", "POLICY_VIOLATION");
-      }
-      const proposal = await repo.getProposal(parsed.proposalId);
-      if (!proposal) throw new DomainError(`Proposal ${parsed.proposalId} not found.`, "NOT_FOUND");
-      specimenId = proposal.specimenId;
-      evidenceIds = proposal.evidenceIds;
-      const currentTime = now();
+      try {
+        const parsed = TrustedDecisionSchema.parse(input);
+        const proposal = await repo.getProposal(parsed.proposalId);
+        if (!proposal) throw new DomainError(`Proposal ${parsed.proposalId} not found.`, "NOT_FOUND");
+        specimenId = proposal.specimenId;
+        evidenceIds = proposal.evidenceIds;
+        if (!await isTrusted(options, parsed, action)) {
+          throw new DomainError("Intervention decisions require application-controlled trusted user action context.", "POLICY_VIOLATION");
+        }
+        const currentTime = now();
       const result = await decideProposal({
         repo,
         proposalId: parsed.proposalId,
