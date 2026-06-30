@@ -71,8 +71,10 @@ function modelRateLimit(req: express.Request, res: express.Response, next: expre
   next();
 }
 
+const EvidenceIdSchema = z.string().regex(/^ev_[A-Za-z0-9_-]+$/);
+
 const EvidenceForModelSchema = z.object({
-  id: z.string().min(1),
+  id: EvidenceIdSchema,
   sourceType: z.string().min(1),
   timestamp: z.string(),
   payload: z.record(z.string(), z.unknown())
@@ -91,18 +93,43 @@ const ArchivistRequestSchema = z.object({
 
 const ArchivistModelOutputSchema = z.object({
   text: z.string().min(1).max(420),
-  evidenceIds: z.array(z.string()).min(1).max(8)
+  evidenceIds: z.array(EvidenceIdSchema).min(1).max(8)
+}).superRefine((output, ctx) => {
+  const uniqueEvidenceIds = new Set(output.evidenceIds);
+  if (uniqueEvidenceIds.size !== output.evidenceIds.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["evidenceIds"],
+      message: "Evidence references must not contain duplicates."
+    });
+  }
 });
 
 const ArchivistResponseSchema = z.object({
   text: z.string().min(1),
-  evidenceIds: z.array(z.string()).default([]),
+  evidenceIds: z.array(EvidenceIdSchema).default([]),
   verificationStatus: z.enum(["grounded", "fallback", "unverified"]),
   generatedBy: z.enum(["gemini", "local_fallback"]),
   promptVersion: z.string(),
   model: z.string(),
   fallbackReason: z.string().optional(),
   latencyMs: z.number().int().nonnegative().optional()
+}).superRefine((response, ctx) => {
+  const uniqueEvidenceIds = new Set(response.evidenceIds);
+  if (uniqueEvidenceIds.size !== response.evidenceIds.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["evidenceIds"],
+      message: "Evidence references must not contain duplicates."
+    });
+  }
+  if (response.generatedBy === "gemini" && response.verificationStatus === "grounded" && response.evidenceIds.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["evidenceIds"],
+      message: "Grounded responses require evidence references."
+    });
+  }
 });
 
 type ArchivistRequest = z.infer<typeof ArchivistRequestSchema>;
@@ -228,7 +255,7 @@ app.post("/api/archivist/observe", modelRateLimit, async (req, res) => {
     res.status(400).json(localFallback({
       workflowId: "invalid",
       specimen: { id: "invalid", name: "Uncatalogued specimen", structure: "unknown", stageLabel: "unknown" },
-      evidence: [{ id: "invalid", sourceType: "validation", timestamp: new Date().toISOString(), payload: {} }]
+      evidence: [{ id: "ev_invalid_request", sourceType: "validation", timestamp: new Date().toISOString(), payload: {} }]
     }, "invalid_request", Date.now() - started));
     return;
   }

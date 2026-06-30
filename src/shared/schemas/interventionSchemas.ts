@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EvidenceIdSchema } from "./evidenceSchemas";
 
 export const InterventionActionSchema = z.enum([
   "adjust_light",
@@ -56,7 +57,7 @@ export const InterventionProposalSchema = z.object({
   specimenId: z.string().min(1),
   action: InterventionActionSchema,
   params: InterventionParamsSchema,
-  evidenceIds: z.array(z.string()).default([]),
+  evidenceIds: z.array(EvidenceIdSchema).default([]),
   reason: z.string().min(1),
   heuristicConfidence: z.number().min(0).max(1),
   proposedBy: z.enum(["system", "archivist", "tool", "user"]).optional(),

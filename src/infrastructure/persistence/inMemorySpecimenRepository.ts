@@ -12,6 +12,7 @@ import {
   validateTraceEvent,
   validateWorkflowSession
 } from "../../domain";
+import { StorageError } from "../../domain/errors";
 import { SpecimenRepository } from "./specimenRepository";
 import {
   EvidenceRecordSchema,
@@ -27,6 +28,16 @@ function deepClone<T>(value: T): T {
     return structuredClone(value);
   }
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 export class InMemorySpecimenRepository implements SpecimenRepository {
@@ -46,6 +57,7 @@ export class InMemorySpecimenRepository implements SpecimenRepository {
   async saveSpecimen(specimen: Specimen): Promise<void> {
     const parsed = SpecimenSchema.parse(specimen) as Specimen;
     validateSpecimen(parsed);
+    this.assertSpecimenObservationEvidence(parsed);
     this.specimens.set(parsed.id, deepClone(parsed));
   }
 
@@ -112,7 +124,11 @@ export class InMemorySpecimenRepository implements SpecimenRepository {
   async appendEvidence(evidence: EvidenceRecord): Promise<void> {
     const parsed = EvidenceRecordSchema.parse(evidence) as EvidenceRecord;
     validateEvidenceRecord(parsed);
-    if (this.evidenceById.has(parsed.id)) return;
+    const existing = this.evidenceById.get(parsed.id);
+    if (existing) {
+      if (stableJson(existing) === stableJson(parsed)) return;
+      throw new StorageError(`Evidence id ${parsed.id} already exists with different content.`);
+    }
     this.evidenceById.set(parsed.id, deepClone(parsed));
   }
 
@@ -164,6 +180,7 @@ export class InMemorySpecimenRepository implements SpecimenRepository {
   async saveProposal(proposal: InterventionProposal): Promise<void> {
     const parsed = InterventionProposalSchema.parse(proposal) as InterventionProposal;
     validateInterventionProposal(parsed);
+    this.assertProposalEvidence(parsed);
     this.proposalsById.set(parsed.id, deepClone(parsed));
   }
 
@@ -177,5 +194,41 @@ export class InMemorySpecimenRepository implements SpecimenRepository {
       .filter((proposal) => proposal.specimenId === specimenId)
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id))
       .map((proposal) => deepClone(proposal));
+  }
+
+  private assertSpecimenObservationEvidence(specimen: Specimen): void {
+    for (const observation of specimen.observations) {
+      const evidenceIds = observation.evidenceIds ?? [];
+      if (new Set(evidenceIds).size !== evidenceIds.length) {
+        throw new StorageError("Observation evidence references must not contain duplicates.");
+      }
+      if (observation.verificationStatus !== "grounded") continue;
+      const missing = evidenceIds.filter((id) => !this.evidenceById.has(id));
+      if (missing.length > 0) {
+        throw new StorageError(`Missing evidence references: ${missing.join(", ")}`);
+      }
+      const wrongSpecimen = evidenceIds
+        .map((id) => this.evidenceById.get(id))
+        .filter((evidence): evidence is EvidenceRecord => !!evidence && evidence.specimenId !== specimen.id);
+      if (wrongSpecimen.length > 0) {
+        throw new StorageError("Observation evidence references must belong to the saved specimen.");
+      }
+    }
+  }
+
+  private assertProposalEvidence(proposal: InterventionProposal): void {
+    if (new Set(proposal.evidenceIds).size !== proposal.evidenceIds.length) {
+      throw new StorageError("Proposal evidence references must not contain duplicates.");
+    }
+    const missing = proposal.evidenceIds.filter((id) => !this.evidenceById.has(id));
+    if (missing.length > 0) {
+      throw new StorageError(`Missing evidence references: ${missing.join(", ")}`);
+    }
+    const wrongSpecimen = proposal.evidenceIds
+      .map((id) => this.evidenceById.get(id))
+      .filter((evidence): evidence is EvidenceRecord => !!evidence && evidence.specimenId !== proposal.specimenId);
+    if (wrongSpecimen.length > 0) {
+      throw new StorageError("Proposal evidence references must belong to the proposal specimen.");
+    }
   }
 }

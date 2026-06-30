@@ -14,6 +14,7 @@
     "test": "vitest run",
     "eval": "vitest run src/application/workflow.evaluation.test.ts src/mcp/vaultTools.test.ts",
     "mcp:dev": "tsx src/mcp/server.ts",
+    "mcp:check": "tsx src/mcp/server.ts --check",
     "release:check": "npm run lint && npm run test && npm run build"
   },
   "keywords": [

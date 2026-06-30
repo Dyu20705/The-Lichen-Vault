@@ -35,6 +35,80 @@ describe("workflow evaluation harness", () => {
     expect(traces.some((trace) => trace.actor === "archivist" && trace.status === "fallback")).toBe(true);
   });
 
+  it("successful workflow with fake model persists grounded observation, evidence, events, and traces", async () => {
+    const repo = new InMemorySpecimenRepository();
+    const result = await runBreathWorkflow({
+      recordings,
+      repository: repo,
+      captureMode: "simulated",
+      workflowId: "wf_fake_model",
+      startedAt: new Date("2026-06-30T00:00:00.000Z"),
+      archivistAdapter: async (input) => ({
+        text: "The thallus rests under glass with a steady foliose margin.",
+        evidenceIds: [input.evidence[0].id],
+        verificationStatus: "grounded",
+        generatedBy: "gemini",
+        promptVersion: "archivist.v1",
+        model: "fake-adk-model"
+      })
+    });
+
+    const specimen = await repo.getSpecimen(result.specimenId);
+    const traces = await repo.listTraces(result.specimenId);
+    const evidence = await repo.listEvidence(result.specimenId);
+    const events = await repo.listEvents(result.specimenId);
+    const workflow = await repo.getWorkflow(result.workflowId);
+
+    expect(specimen?.observations[0]).toMatchObject({
+      verificationStatus: "grounded",
+      generatedBy: "gemini",
+      model: "fake-adk-model"
+    });
+    expect(await repo.getEvidence(specimen!.observations[0].evidenceIds![0])).not.toBeNull();
+    expect(evidence.map((item) => item.id)).toEqual([
+      "ev_wf_fake_model_breath",
+      "ev_wf_fake_model_growth",
+      "ev_wf_fake_model_signal"
+    ]);
+    expect(events.map((item) => item.type)).toEqual([
+      "breath_deposited",
+      "growth_simulated",
+      "signal_analyzed",
+      "archival_entry_created",
+      "intervention_proposed"
+    ]);
+    expect(traces.map((item) => item.status)).toEqual(["succeeded", "succeeded", "succeeded", "succeeded"]);
+    expect(workflow?.status).toBe("completed");
+    expect(workflow?.stepsCompleted).toEqual(["signal_curator", "growth_simulator", "archivist", "policy"]);
+  });
+
+  it("model timeout uses fallback and records fallback trace", async () => {
+    const repo = new InMemorySpecimenRepository();
+    const result = await runBreathWorkflow({
+      recordings,
+      repository: repo,
+      captureMode: "simulated",
+      workflowId: "wf_timeout",
+      archivistTimeoutMs: 1,
+      archivistAdapter: () => new Promise((resolve) => setTimeout(() => resolve({
+        text: "Too late.",
+        evidenceIds: ["ev_wf_timeout_breath"],
+        verificationStatus: "grounded",
+        generatedBy: "gemini",
+        promptVersion: "archivist.v1",
+        model: "slow-model"
+      }), 20))
+    });
+
+    const specimen = await repo.getSpecimen(result.specimenId);
+    const traces = await repo.listTraces(result.specimenId);
+    const archivistTrace = traces.find((trace) => trace.actor === "archivist");
+
+    expect(specimen?.observations[0].verificationStatus).toBe("fallback");
+    expect(archivistTrace?.status).toBe("fallback");
+    expect(archivistTrace?.fallbackReason).toBe("archivist_timeout");
+  });
+
   it("corrupted storage is not automatically deleted", async () => {
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, "localStorage", {
@@ -151,6 +225,31 @@ describe("workflow evaluation harness", () => {
     expect(specimen?.observations[0].verificationStatus).toBe("fallback");
   });
 
+  it("workflow failed deterministic step records failed trace and workflow status", async () => {
+    const repo = new InMemorySpecimenRepository();
+
+    await expect(runBreathWorkflow({
+      recordings: recordings.slice(0, 2),
+      repository: repo,
+      captureMode: "simulated",
+      workflowId: "wf_bad_signal"
+    })).rejects.toThrow("exactly three breaths");
+
+    const specimenId = "lichen_wf_bad_signal";
+    const workflow = await repo.getWorkflow("wf_bad_signal");
+    const traces = await repo.listTraces(specimenId);
+
+    expect(workflow?.status).toBe("failed");
+    expect(workflow?.errors[0]).toContain("exactly three breaths");
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({
+      actor: "curator",
+      operation: "Signal Curator",
+      status: "failed",
+      errorCategory: "validation"
+    });
+  });
+
   it("raw audio never appears in model request payloads", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -209,4 +308,13 @@ describe("workflow evaluation harness", () => {
     await expect(repo.listSpecimens()).rejects.toThrow(StorageCorruptionError);
     expect(storage.has("future_flora")).toBe(true);
   });
+
+  it("ADK runtime primitives are compatible with the TypeScript server bundle boundary", async () => {
+    const { FunctionTool, InMemoryRunner, LlmAgent, stringifyContent } = await import("@google/adk");
+
+    expect(typeof FunctionTool).toBe("function");
+    expect(typeof InMemoryRunner).toBe("function");
+    expect(typeof LlmAgent).toBe("function");
+    expect(typeof stringifyContent).toBe("function");
+  }, 15_000);
 });

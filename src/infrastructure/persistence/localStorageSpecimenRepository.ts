@@ -52,6 +52,16 @@ function stableHash(input: string): number {
   return Math.abs(hash >>> 0);
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function deterministicObservationId(specimenId: string, index: number): string {
   return `obs_${stableHash(`legacy-observation:${specimenId}:${index}`)}_${index + 1}`;
 }
@@ -81,16 +91,15 @@ function normalizeObservation(rawObservation: unknown, specimenId: string, birth
   const raw = isRecord(rawObservation) ? rawObservation : {};
   const explicitOrigin = raw.generatedBy;
   const hasEvidence = Array.isArray(raw.evidenceIds) && raw.evidenceIds.length > 0;
-  const hasConfidence = typeof raw.confidence === "number";
 
-  if (explicitOrigin === "gemini" && hasEvidence && hasConfidence) {
+  if (explicitOrigin === "gemini" && hasEvidence && (raw.evidenceIds as unknown[]).every((id) => typeof id === "string" && /^ev_[A-Za-z0-9_-]+$/.test(id))) {
     return {
       id: typeof raw.id === "string" && raw.id.trim() ? raw.id : deterministicObservationId(specimenId, index),
       timestamp: typeof raw.timestamp === "number" && raw.timestamp > 0 ? Math.trunc(raw.timestamp) : birthTime,
       observationNumber: typeof raw.observationNumber === "number" && raw.observationNumber > 0 ? Math.trunc(raw.observationNumber) : index + 1,
       text: typeof raw.text === "string" && raw.text.length > 0 ? raw.text : "Unrecorded historical notes on tissue containment.",
       evidenceIds: raw.evidenceIds,
-      confidence: raw.confidence,
+      confidence: null,
       generatedBy: "gemini" as const,
       verificationStatus: "grounded" as const
     };
@@ -102,8 +111,8 @@ function normalizeObservation(rawObservation: unknown, specimenId: string, birth
       timestamp: typeof raw.timestamp === "number" && raw.timestamp > 0 ? Math.trunc(raw.timestamp) : birthTime,
       observationNumber: typeof raw.observationNumber === "number" && raw.observationNumber > 0 ? Math.trunc(raw.observationNumber) : index + 1,
       text: typeof raw.text === "string" && raw.text.length > 0 ? raw.text : "Unrecorded local fallback note.",
-      evidenceIds: hasEvidence ? raw.evidenceIds : [],
-      confidence: hasConfidence ? raw.confidence : null,
+      evidenceIds: [],
+      confidence: null,
       generatedBy: "local_fallback" as const,
       verificationStatus: "fallback" as const
     };
@@ -125,8 +134,13 @@ export function migrateLichenOrganismToSpecimen(rawInput: unknown): Specimen {
   try {
     const alreadyParsed = SpecimenSchema.safeParse(rawInput);
     if (alreadyParsed.success && isRecord(rawInput) && rawInput.schemaVersion === CURRENT_STORAGE_VERSION) {
-      validateSpecimen(alreadyParsed.data as Specimen);
-      return alreadyParsed.data as Specimen;
+      try {
+        validateSpecimen(alreadyParsed.data as Specimen);
+        return alreadyParsed.data as Specimen;
+      } catch {
+        // Continue through the compatibility path so older v2 records without
+        // explicit provenance are normalized instead of being erased or blocked.
+      }
     }
 
     if (!isRecord(rawInput)) {
@@ -191,9 +205,10 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
   private traceKey = "lichen_vault_traces";
   private proposalKey = "lichen_vault_proposals";
 
-  constructor(specimenKey?: string, eventKey?: string) {
+  constructor(specimenKey?: string, eventKey?: string, evidenceKey?: string) {
     if (specimenKey) this.specimenKey = specimenKey;
     if (eventKey) this.eventKey = eventKey;
+    if (evidenceKey) this.evidenceKey = evidenceKey;
   }
 
   getRecoverySnapshot(error: unknown): RecoverySnapshot | null {
@@ -241,14 +256,10 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
       throw new StorageCorruptionError("Specimen storage uses an unsupported future schema version.", this.specimenKey, rawPayload, `schemaVersion=${parsed.schemaVersion}`, "unrecoverable");
     }
 
-    const envelope = SpecimenStorageEnvelopeSchema.safeParse(parsed);
-    if (!envelope.success) {
-      throw new StorageCorruptionError("Specimen storage envelope failed validation.", this.specimenKey, rawPayload, envelope.error.message);
+    if (parsed.schemaVersion !== CURRENT_STORAGE_VERSION || !Array.isArray(parsed.specimens)) {
+      throw new StorageCorruptionError("Specimen storage envelope failed validation.", this.specimenKey, rawPayload, "Expected v2 specimens array.");
     }
-    return envelope.data.specimens.map((specimen) => {
-      validateSpecimen(specimen as Specimen);
-      return specimen as Specimen;
-    });
+    return parsed.specimens.map((specimen) => migrateLichenOrganismToSpecimen(specimen));
   }
 
   private readEventEnvelope(): SpecimenEvent[] {
@@ -299,6 +310,12 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
     const rawPayload = localStorage.getItem(this.evidenceKey);
     if (rawPayload === null) return [];
     const parsed = this.parseJson(rawPayload, this.evidenceKey);
+    if (!isRecord(parsed)) {
+      throw new StorageCorruptionError("Evidence storage envelope is not an object.", this.evidenceKey, rawPayload, "Expected v1 evidence envelope.");
+    }
+    if (typeof parsed.schemaVersion === "number" && parsed.schemaVersion > 1) {
+      throw new StorageCorruptionError("Evidence storage uses an unsupported future schema version.", this.evidenceKey, rawPayload, `schemaVersion=${parsed.schemaVersion}`, "unrecoverable");
+    }
     const envelope = EvidenceStorageEnvelopeSchema.safeParse(parsed);
     if (!envelope.success) {
       throw new StorageCorruptionError("Evidence storage envelope failed validation.", this.evidenceKey, rawPayload, envelope.error.message);
@@ -343,6 +360,7 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
   async saveSpecimen(specimen: Specimen): Promise<void> {
     const parsed = SpecimenSchema.parse(specimen) as Specimen;
     validateSpecimen(parsed);
+    this.assertSpecimenObservationEvidence(parsed);
     const specimens = this.readSpecimenEnvelope();
     const index = specimens.findIndex((item) => item.id === parsed.id);
     const nextSpecimens = index >= 0
@@ -434,8 +452,12 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
     const parsed = EvidenceRecordSchema.parse(evidence) as EvidenceRecord;
     validateEvidenceRecord(parsed);
     const existing = this.readEvidenceEnvelope();
-    if (existing.some((item) => item.id === parsed.id)) return;
-    this.writeEvidence([...existing, parsed]);
+    const duplicate = existing.find((item) => item.id === parsed.id);
+    if (duplicate) {
+      if (stableJson(duplicate) === stableJson(parsed)) return;
+      throw new StorageError(`Evidence id ${parsed.id} already exists with different content.`);
+    }
+    this.writeEvidence([...existing, parsed].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id)));
   }
 
   async getEvidence(id: string): Promise<EvidenceRecord | null> {
@@ -486,6 +508,7 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
   async saveProposal(proposal: InterventionProposal): Promise<void> {
     const parsed = InterventionProposalSchema.parse(proposal) as InterventionProposal;
     validateInterventionProposal(parsed);
+    this.assertProposalEvidence(parsed);
     const proposals = this.readArrayEnvelope(this.proposalKey, "Proposal", 1, "proposals", InterventionProposalSchema, validateInterventionProposal) as InterventionProposal[];
     const next = proposals.some((item) => item.id === parsed.id)
       ? proposals.map((item) => item.id === parsed.id ? parsed : item)
@@ -502,5 +525,41 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
     return (this.readArrayEnvelope(this.proposalKey, "Proposal", 1, "proposals", InterventionProposalSchema, validateInterventionProposal) as InterventionProposal[])
       .filter((item) => item.specimenId === specimenId)
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id));
+  }
+
+  private assertSpecimenObservationEvidence(specimen: Specimen): void {
+    const evidence = this.readEvidenceEnvelope();
+    for (const observation of specimen.observations) {
+      const evidenceIds = observation.evidenceIds ?? [];
+      if (new Set(evidenceIds).size !== evidenceIds.length) {
+        throw new StorageError("Observation evidence references must not contain duplicates.");
+      }
+      if (observation.verificationStatus !== "grounded") continue;
+      const records = evidenceIds.map((id) => evidence.find((item) => item.id === id) ?? null);
+      const missing = evidenceIds.filter((_, index) => records[index] === null);
+      if (missing.length > 0) {
+        throw new StorageError(`Missing evidence references: ${missing.join(", ")}`);
+      }
+      const wrongSpecimen = records.filter((record): record is EvidenceRecord => !!record && record.specimenId !== specimen.id);
+      if (wrongSpecimen.length > 0) {
+        throw new StorageError("Observation evidence references must belong to the saved specimen.");
+      }
+    }
+  }
+
+  private assertProposalEvidence(proposal: InterventionProposal): void {
+    if (new Set(proposal.evidenceIds).size !== proposal.evidenceIds.length) {
+      throw new StorageError("Proposal evidence references must not contain duplicates.");
+    }
+    const evidence = this.readEvidenceEnvelope();
+    const records = proposal.evidenceIds.map((id) => evidence.find((item) => item.id === id) ?? null);
+    const missing = proposal.evidenceIds.filter((_, index) => records[index] === null);
+    if (missing.length > 0) {
+      throw new StorageError(`Missing evidence references: ${missing.join(", ")}`);
+    }
+    const wrongSpecimen = records.filter((record): record is EvidenceRecord => !!record && record.specimenId !== proposal.specimenId);
+    if (wrongSpecimen.length > 0) {
+      throw new StorageError("Proposal evidence references must belong to the proposal specimen.");
+    }
   }
 }

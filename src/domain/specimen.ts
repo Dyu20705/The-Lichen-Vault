@@ -1,4 +1,5 @@
 import { InvariantError } from "./errors";
+import { EVIDENCE_ID_PATTERN } from "./evidence";
 
 export type LichenStructure = 'Crustose' | 'Foliose' | 'Fruticose';
 export type ObservationOrigin = "gemini" | "local_fallback" | "legacy_unverified";
@@ -92,13 +93,24 @@ export function validateSpecimen(specimen: Specimen): void {
       throw new InvariantError("Confidence must remain in [0, 1].");
     }
     if (specimen.schemaVersion >= 2) {
-      if (obs.generatedBy === "gemini") {
-        if (!obs.evidenceIds || obs.evidenceIds.length === 0) {
-          throw new InvariantError("Gemini observations must contain at least one evidence reference.");
-        }
-        if (obs.verificationStatus !== "grounded") {
-          throw new InvariantError("Gemini observations must be marked grounded.");
-        }
+      if (!obs.generatedBy) {
+        throw new InvariantError("Version 2 observations must declare their origin.");
+      }
+      if (!obs.verificationStatus) {
+        throw new InvariantError("Version 2 observations must declare verification status.");
+      }
+      if (!Array.isArray(obs.evidenceIds)) {
+        throw new InvariantError("Version 2 observations must carry an explicit evidence reference array.");
+      }
+      const uniqueEvidenceIds = new Set(obs.evidenceIds);
+      if (uniqueEvidenceIds.size !== obs.evidenceIds.length) {
+        throw new InvariantError("Observation evidence references must not contain duplicates.");
+      }
+      if (obs.evidenceIds.some((id) => !EVIDENCE_ID_PATTERN.test(id))) {
+        throw new InvariantError("Observation evidence references must use the ev_ prefix convention.");
+      }
+      if (obs.verificationStatus === "grounded" && obs.evidenceIds.length === 0) {
+        throw new InvariantError("Grounded observations must contain at least one evidence reference.");
       }
 
       if (obs.generatedBy === "local_fallback" && obs.verificationStatus !== "fallback") {

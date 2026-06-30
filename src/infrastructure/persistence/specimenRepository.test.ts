@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { Specimen, SpecimenEvent } from "../../domain";
+import { EvidenceRecord, Specimen, SpecimenEvent } from "../../domain";
 import { StorageCorruptionError, StorageError, TransactionRollbackError } from "../../domain/errors";
 import { InMemorySpecimenRepository } from "./inMemorySpecimenRepository";
 import { LocalStorageSpecimenRepository, migrateLichenOrganismToSpecimen } from "./localStorageSpecimenRepository";
@@ -43,6 +43,7 @@ class MemoryStorage implements Storage {
 
 const floraKey = "test_flora";
 const eventKey = "test_events";
+const evidenceKey = "test_evidence";
 
 function installStorage(): MemoryStorage {
   const storage = new MemoryStorage();
@@ -97,6 +98,18 @@ function event(overrides: Partial<SpecimenEvent> = {}): SpecimenEvent {
     },
     ...overrides
   } as SpecimenEvent;
+}
+
+function evidence(overrides: Partial<EvidenceRecord> = {}): EvidenceRecord {
+  return {
+    id: "ev_specimen_001_breath",
+    specimenId: "specimen_001",
+    sourceType: "breath_capture",
+    timestamp: "2026-06-20T12:00:00.000Z",
+    payload: { samples: [{ duration: 2.1, intensity: 44, pikes: 2 }] },
+    schemaVersion: 1,
+    ...overrides
+  };
 }
 
 describe("Specimen repository migration and recovery", () => {
@@ -156,8 +169,34 @@ describe("Specimen repository migration and recovery", () => {
     expect(first.birthTime).toBe(1686700000000);
   });
 
+  it("keeps existing v2 specimen fixtures readable by normalizing missing provenance", async () => {
+    const repository = new LocalStorageSpecimenRepository(floraKey, eventKey, evidenceKey);
+    localStorage.setItem(floraKey, JSON.stringify({
+      schemaVersion: 2,
+      specimens: [{
+        ...specimen(),
+        observations: [{
+          id: "obs_old_v2",
+          timestamp: 1771112223000,
+          observationNumber: 1,
+          text: "Older v2 record without provenance fields."
+        }]
+      }]
+    }));
+
+    const loaded = await repository.listSpecimens();
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].observations[0]).toMatchObject({
+      generatedBy: "legacy_unverified",
+      verificationStatus: "unverified",
+      evidenceIds: [],
+      confidence: null
+    });
+  });
+
   it("fails safely for unsupported future versions and malformed storage", async () => {
-    const repository = new LocalStorageSpecimenRepository(floraKey, eventKey);
+    const repository = new LocalStorageSpecimenRepository(floraKey, eventKey, evidenceKey);
     localStorage.setItem(floraKey, JSON.stringify({ schemaVersion: 99, specimens: [] }));
     await expect(repository.listSpecimens()).rejects.toThrow(StorageCorruptionError);
 
@@ -174,6 +213,110 @@ describe("Specimen repository migration and recovery", () => {
     localStorage.setItem(floraKey, "{bad-json");
     await expect(repository.saveSpecimen(specimen({ id: "other" }))).rejects.toThrow(StorageCorruptionError);
     expect(localStorage.getItem(floraKey)).toBe("{bad-json");
+  });
+});
+
+describe("Evidence persistence and reference integrity", () => {
+  let storage: MemoryStorage;
+
+  beforeEach(() => {
+    storage = installStorage();
+  });
+
+  it("validates, persists, reads, and lists evidence records deterministically", async () => {
+    const local = new LocalStorageSpecimenRepository(floraKey, eventKey, evidenceKey);
+    const memory = new InMemorySpecimenRepository();
+    const later = evidence({ id: "ev_specimen_001_signal", sourceType: "signal_analysis", timestamp: "2026-06-20T12:01:00.000Z" });
+
+    await local.appendEvidence(later);
+    await local.appendEvidence(evidence());
+    await memory.appendEvidence(later);
+    await memory.appendEvidence(evidence());
+
+    expect(await local.getEvidence(evidence().id)).toEqual(evidence());
+    expect((await local.listEvidence("specimen_001")).map((item) => item.id)).toEqual(["ev_specimen_001_breath", "ev_specimen_001_signal"]);
+    expect((await memory.listEvidence("specimen_001")).map((item) => item.id)).toEqual(["ev_specimen_001_breath", "ev_specimen_001_signal"]);
+  });
+
+  it("handles duplicate and malformed evidence ids without silently changing records", async () => {
+    const local = new LocalStorageSpecimenRepository(floraKey, eventKey, evidenceKey);
+    await local.appendEvidence(evidence());
+    await local.appendEvidence(evidence());
+
+    await expect(local.appendEvidence(evidence({ payload: { changed: true } }))).rejects.toThrow(StorageError);
+    await expect(local.appendEvidence(evidence({ id: "field_breathDuration" }))).rejects.toThrow();
+    expect(await local.listEvidence("specimen_001")).toHaveLength(1);
+  });
+
+  it("accepts grounded observations only when referenced evidence resolves", async () => {
+    const local = new LocalStorageSpecimenRepository(floraKey, eventKey, evidenceKey);
+    const memory = new InMemorySpecimenRepository();
+    const grounded = specimen({
+      observations: [{
+        id: "obs_grounded",
+        timestamp: 1771112223000,
+        observationNumber: 1,
+        text: "Evidence-backed observation.",
+        evidenceIds: [evidence().id],
+        confidence: null,
+        generatedBy: "gemini",
+        verificationStatus: "grounded"
+      }]
+    });
+
+    await local.appendEvidence(evidence());
+    await memory.appendEvidence(evidence());
+    await expect(local.saveSpecimen(grounded)).resolves.not.toThrow();
+    await expect(memory.saveSpecimen(grounded)).resolves.not.toThrow();
+
+    const missing = specimen({
+      observations: [{ ...grounded.observations[0], evidenceIds: ["ev_missing"] }]
+    });
+    await expect(local.saveSpecimen(missing)).rejects.toThrow("Missing evidence");
+    await expect(memory.saveSpecimen(missing)).rejects.toThrow("Missing evidence");
+  });
+
+  it("requires proposal evidence references to resolve before persistence", async () => {
+    const repository = new InMemorySpecimenRepository();
+    await repository.appendEvidence(evidence());
+
+    await expect(repository.saveProposal({
+      id: "pr_valid",
+      specimenId: "specimen_001",
+      action: "export_data",
+      params: { action: "export_data", payload: {} },
+      evidenceIds: [evidence().id],
+      reason: "Export only after approval.",
+      heuristicConfidence: 0.63,
+      riskLevel: "high",
+      status: "pending",
+      createdAt: "2026-06-20T12:00:00.000Z"
+    })).resolves.not.toThrow();
+
+    await expect(repository.saveProposal({
+      id: "pr_missing",
+      specimenId: "specimen_001",
+      action: "export_data",
+      params: { action: "export_data", payload: {} },
+      evidenceIds: ["ev_missing"],
+      reason: "Missing evidence should fail.",
+      heuristicConfidence: 0.63,
+      riskLevel: "high",
+      status: "pending",
+      createdAt: "2026-06-20T12:00:00.000Z"
+    })).rejects.toThrow("Missing evidence");
+  });
+
+  it("fails safely for future or corrupt evidence envelopes without deleting payloads", async () => {
+    const repository = new LocalStorageSpecimenRepository(floraKey, eventKey, evidenceKey);
+    localStorage.setItem(evidenceKey, JSON.stringify({ schemaVersion: 99, evidence: [] }));
+    await expect(repository.listEvidence("specimen_001")).rejects.toThrow(StorageCorruptionError);
+    expect(localStorage.getItem(evidenceKey)).toContain('"schemaVersion":99');
+
+    localStorage.setItem(evidenceKey, "{bad-json");
+    await expect(repository.listEvidence("specimen_001")).rejects.toThrow(StorageCorruptionError);
+    expect(localStorage.getItem(evidenceKey)).toBe("{bad-json");
+    expect(storage.length).toBeGreaterThan(0);
   });
 });
 

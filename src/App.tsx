@@ -441,6 +441,7 @@ export default function App() {
                 onLoadTraces={(specimenId) => repository.listTraces(specimenId)}
                 onLoadEvidence={(specimenId) => repository.listEvidence(specimenId)}
                 onLoadProposals={(specimenId) => repository.listProposals(specimenId)}
+                onLoadEvents={(specimenId) => repository.listEvents(specimenId)}
                 onDecideProposal={handleDecideProposal}
               />
             </div>

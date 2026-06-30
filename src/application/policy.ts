@@ -28,6 +28,9 @@ export async function assertEvidenceReferences(repo: SpecimenRepository, specime
   if (unique.size !== evidenceIds.length) {
     throw new PolicyError("Evidence references must not be duplicated.");
   }
+  if (evidenceIds.some((id) => !id.startsWith("ev_"))) {
+    throw new PolicyError("Evidence references must use the ev_ prefix convention.");
+  }
   const records = await Promise.all(evidenceIds.map((id) => repo.getEvidence(id)));
   const missing = evidenceIds.filter((_, index) => records[index] === null);
   if (missing.length > 0) {
@@ -83,9 +86,12 @@ export async function decideProposal(params: {
   if (params.context.actor !== "user" || !params.context.userId || !params.context.actionNonce) {
     throw new PolicyError("Intervention decisions require an explicit trusted user action context.");
   }
-  if (existing.status === "approved" || existing.status === "rejected") {
+  if (existing.status === params.decision) {
     const event = decisionEvent(existing, params.decision, existing.decision!, false);
     return { proposal: existing, event, changed: false };
+  }
+  if (existing.status === "approved" || existing.status === "rejected") {
+    throw new PolicyError(`Proposal ${params.proposalId} is already ${existing.status} and cannot be changed to ${params.decision}.`);
   }
 
   const decision: InterventionDecision = {

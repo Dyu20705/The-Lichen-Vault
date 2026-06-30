@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EvidenceIdSchema } from "./evidenceSchemas";
 
 export const LichenStructureSchema = z.enum(['Crustose', 'Foliose', 'Fruticose']);
 export const ObservationOriginSchema = z.enum(["gemini", "local_fallback", "legacy_unverified"]);
@@ -9,12 +10,42 @@ export const ArchivalObservationSchema = z.object({
   timestamp: z.number().int().positive(),
   observationNumber: z.number().int().positive(),
   text: z.string().min(1),
-  evidenceIds: z.array(z.string()).optional(),
+  evidenceIds: z.array(EvidenceIdSchema).default([]),
   confidence: z.number().min(0).max(1).nullable().optional(),
   generatedBy: ObservationOriginSchema.optional(),
   verificationStatus: VerificationStatusSchema.optional(),
   promptVersion: z.string().optional(),
   model: z.string().optional()
+}).superRefine((observation, ctx) => {
+  const uniqueEvidenceIds = new Set(observation.evidenceIds);
+  if (uniqueEvidenceIds.size !== observation.evidenceIds.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["evidenceIds"],
+      message: "Evidence references must not contain duplicates."
+    });
+  }
+  if (observation.verificationStatus === "grounded" && observation.evidenceIds.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["evidenceIds"],
+      message: "Grounded observations require at least one evidence reference."
+    });
+  }
+  if (observation.generatedBy === "local_fallback" && observation.verificationStatus !== "fallback") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["verificationStatus"],
+      message: "Local fallback observations must be marked fallback."
+    });
+  }
+  if (observation.generatedBy === "legacy_unverified" && observation.verificationStatus !== "unverified") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["verificationStatus"],
+      message: "Legacy observations must be marked unverified."
+    });
+  }
 });
 
 export const LegacyMemorySchema = z.object({
@@ -69,7 +100,7 @@ export const SpecimenEventSchema = z.object({
     "workflow_fallback"
   ]),
   schemaVersion: z.number().int().positive(),
-  evidenceIds: z.array(z.string()).default([]),
+  evidenceIds: z.array(EvidenceIdSchema).default([]),
   payload: z.record(z.string(), z.unknown())
 });
 

@@ -105,6 +105,7 @@ npm run lint           # Type-check the project
 npm run test           # Run Vitest tests
 npm run eval           # Run fake-model workflow and MCP evaluation tests
 npm run mcp:dev        # Start the Vault MCP stdio server
+npm run mcp:check      # Dry-run the MCP server and list exposed tools
 npm run build          # Build the client and bundled production server
 npm run start          # Serve the production build from dist/
 npm run preview        # Build, then start the production server
@@ -120,6 +121,19 @@ npm run start
 ```
 
 The production server serves `dist/`, falls back to `index.html` for SPA routes, listens on `0.0.0.0`, and respects a valid `PORT` environment variable. `/health` returns service status, model configuration state, ADK package participation, and current server time.
+
+## Vault MCP Server
+
+The Vault MCP server runs as a separate stdio process:
+
+```bash
+npm run mcp:check
+npm run mcp:dev
+```
+
+It exposes schema-validated tools for specimen reads, event/evidence/trace reads, fallback observation appends, intervention proposals, trusted approval/rejection, and versioned specimen export. Direct destructive tools such as `delete_specimen` are intentionally absent.
+
+Approval, rejection, and export require an application-controlled trusted action validator. The default standalone stdio server exposes the schemas but does not grant autonomous approval authority by itself; callers must integrate a separate human-confirmation boundary before those actions can succeed.
 
 ## Demo Flow
 

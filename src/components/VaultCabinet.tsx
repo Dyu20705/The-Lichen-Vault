@@ -1,11 +1,19 @@
 import React, { useState, useEffect } from "react";
-import { BookOpen, Calendar, Hourglass, ChevronLeft, RefreshCw, Layers, Sparkles, GitBranch, ShieldCheck } from "lucide-react";
+import { BookOpen, Calendar, Hourglass, ChevronLeft, RefreshCw, Layers, Sparkles, GitBranch, ShieldCheck, Eye, Download, X } from "lucide-react";
 import { LichenOrganism, ArchivalObservation } from "../types";
 import { calculateGrowthState, SeededRandom } from "../utils/generator";
 import { LichenRenderer } from "./LichenRenderer";
-import { EvidenceRecord, InterventionProposal, TraceEvent } from "../domain";
+import { EvidenceRecord, InterventionProposal, SpecimenEvent, TraceEvent } from "../domain";
 import { ArchivistResponseSchema, localArchivistFallback, toObservation } from "../application/archivist";
 import { DecisionKind } from "../application/policy";
+import {
+  createVaultUiExportPayload,
+  evidenceIdsForTrace,
+  groupTracesByWorkflow,
+  inspectEvidenceReference,
+  proposalDisplayState,
+  traceStatusLabel
+} from "./vaultInspection";
 
 interface VaultCabinetProps {
   organisms: LichenOrganism[];
@@ -14,6 +22,7 @@ interface VaultCabinetProps {
   onLoadTraces: (specimenId: string) => Promise<TraceEvent[]>;
   onLoadEvidence: (specimenId: string) => Promise<EvidenceRecord[]>;
   onLoadProposals: (specimenId: string) => Promise<InterventionProposal[]>;
+  onLoadEvents: (specimenId: string) => Promise<SpecimenEvent[]>;
   onDecideProposal: (proposalId: string, decision: DecisionKind) => Promise<void>;
 }
 
@@ -24,6 +33,7 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
   onLoadTraces,
   onLoadEvidence,
   onLoadProposals,
+  onLoadEvents,
   onDecideProposal,
 }) => {
   const [selectedLichen, setSelectedLichen] = useState<LichenOrganism | null>(null);
@@ -36,6 +46,10 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
   const [evidence, setEvidence] = useState<EvidenceRecord[]>([]);
   const [proposals, setProposals] = useState<InterventionProposal[]>([]);
   const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null);
+  const [exportBusyId, setExportBusyId] = useState<string | null>(null);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
 
   // Helper to establish a consistent, physical "Vault Hall" location based on its seed
   const getVaultHall = (seed: number): string => {
@@ -155,6 +169,9 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
       setTraces([]);
       setEvidence([]);
       setProposals([]);
+      setSelectedEvidenceId(null);
+      setProposalError(null);
+      setExportStatus(null);
       return;
     }
     let cancelled = false;
@@ -253,15 +270,67 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
 
   const decide = async (proposalId: string, decision: DecisionKind) => {
     if (!selectedLichen || proposalBusyId) return;
+    setProposalError(null);
     setProposalBusyId(proposalId);
     try {
       await onDecideProposal(proposalId, decision);
-      const nextProposals = await onLoadProposals(selectedLichen.id);
-      const nextTraces = await onLoadTraces(selectedLichen.id);
+      const [nextProposals, nextTraces] = await Promise.all([
+        onLoadProposals(selectedLichen.id),
+        onLoadTraces(selectedLichen.id)
+      ]);
       setProposals(nextProposals);
       setTraces(nextTraces);
+    } catch (error) {
+      setProposalError(error instanceof Error ? error.message : "Decision could not be recorded.");
     } finally {
       setProposalBusyId(null);
+    }
+  };
+
+  const openEvidence = (evidenceId: string) => {
+    setSelectedEvidenceId(evidenceId);
+  };
+
+  const exportApprovedProposal = async (proposal: InterventionProposal) => {
+    if (!selectedLichen || exportBusyId) return;
+    const confirmed = window.confirm(
+      "Prepare a versioned Lichen Vault JSON export?\n\nIncluded: specimen profile, event log, structured evidence, traces, and proposal decisions.\n\nExcluded: raw audio, API keys, approval tokens, secrets, and raw model prompts."
+    );
+    if (!confirmed) return;
+
+    setExportBusyId(proposal.id);
+    setExportStatus(null);
+    try {
+      const [nextEvents, nextEvidence, nextTraces, nextProposals] = await Promise.all([
+        onLoadEvents(selectedLichen.id),
+        onLoadEvidence(selectedLichen.id),
+        onLoadTraces(selectedLichen.id),
+        onLoadProposals(selectedLichen.id)
+      ]);
+      const exported = createVaultUiExportPayload({
+        specimen: selectedLichen,
+        events: nextEvents,
+        evidence: nextEvidence,
+        traces: nextTraces,
+        proposals: nextProposals,
+        exportedAt: new Date().toISOString()
+      });
+      setEvidence(nextEvidence);
+      setTraces(nextTraces);
+      setProposals(nextProposals);
+
+      const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${selectedLichen.id}-vault-export-v${exported.schemaVersion}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setExportStatus(`Export prepared with ${exported.evidence.length} evidence records and ${exported.traces.length} traces.`);
+    } catch (error) {
+      setExportStatus(error instanceof Error ? error.message : "Export could not be prepared.");
+    } finally {
+      setExportBusyId(null);
     }
   };
 
@@ -285,6 +354,11 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
       minute: "2-digit",
     });
   };
+
+  const traceGroups = groupTracesByWorkflow(traces);
+  const evidenceInspection = selectedEvidenceId
+    ? inspectEvidenceReference(evidence, selectedEvidenceId, traces, proposals)
+    : null;
 
   return (
     <div id="vault_master_editorial" className="w-full min-h-[500px]">
@@ -622,8 +696,10 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
             {/* TRACE PANEL */}
             <div className="glass-panel p-5 border border-[#2d4f2d]/30 rounded-xl bg-[#050805]/70">
               <button
+                type="button"
                 onClick={() => setTracePanelOpen((open) => !open)}
-                className="w-full flex items-center justify-between text-left bg-transparent cursor-pointer"
+                aria-expanded={tracePanelOpen}
+                className="w-full flex items-center justify-between text-left bg-transparent cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffbf00]/70"
               >
                 <span className="font-serif text-[#d4d4c8] tracking-[0.08em] font-light flex items-center gap-2 uppercase">
                   <GitBranch className="w-4 h-4 text-[#ffbf00]" />
@@ -634,33 +710,104 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
                 </span>
               </button>
               {tracePanelOpen && (
-                <div className="mt-4 flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                <div className="mt-4 flex flex-col gap-3 max-h-72 overflow-y-auto pr-1">
                   {traces.length === 0 ? (
                     <p className="font-serif italic text-xs text-[#8ba18b]/60">No workflow trace has been persisted for this historical specimen.</p>
-                  ) : traces.map((item) => (
-                    <div key={item.id} className="border border-[#2d4f2d]/25 bg-black/25 rounded p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.16em]">
-                        <span className="text-[#ffbf00]">{item.operation}</span>
-                        <span className={item.status === "failed" ? "text-red-400" : item.status === "fallback" ? "text-[#ffbf00]" : "text-[#8ba18b]"}>
-                          {item.actor} // {item.status} // {item.durationMs ?? 0} ms
+                  ) : traceGroups.map((group) => (
+                    <div key={group.workflowId} className="border border-[#2d4f2d]/20 bg-black/20 rounded p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-[#8ba18b]/70 break-all">
+                          Workflow {group.workflowId}
+                        </span>
+                        <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-[#8ba18b]/50">
+                          {new Date(group.latestTimestamp).toLocaleString()}
                         </span>
                       </div>
-                      <p className="font-serif text-xs text-[#d4d4c8]/85 mt-2 leading-relaxed">{item.summary}</p>
-                      {(item.fallbackReason || item.errorCode) && (
-                        <p className="font-mono text-[9px] text-[#ffbf00]/75 mt-2">
-                          {item.fallbackReason ?? item.errorCode}
-                        </p>
-                      )}
-                      {item.inputEvidenceIds.length + item.outputEvidenceIds.length > 0 && (
-                        <p className="font-mono text-[8px] text-[#8ba18b]/60 mt-2 break-all">
-                          Evidence: {[...item.inputEvidenceIds, ...item.outputEvidenceIds].join(", ")}
-                        </p>
-                      )}
+                      <div className="flex flex-col gap-2">
+                        {group.traces.map((item) => (
+                          <div key={item.id} className="border border-[#2d4f2d]/25 bg-[#050805]/60 rounded p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.16em]">
+                              <span className="text-[#ffbf00]">{item.operation}</span>
+                              <span className={item.status === "failed" ? "text-red-400" : item.status === "fallback" ? "text-[#ffbf00]" : "text-[#8ba18b]"}>
+                                {item.actor} // {traceStatusLabel(item)} // {item.durationMs ?? 0} ms
+                              </span>
+                            </div>
+                            <div className="mt-1 font-mono text-[8px] uppercase tracking-[0.16em] text-[#8ba18b]/55">
+                              {new Date(item.timestamp).toLocaleString()}
+                            </div>
+                            <p className="font-serif text-xs text-[#d4d4c8]/85 mt-2 leading-relaxed">{item.summary}</p>
+                            {(item.fallbackReason || item.errorCode) && (
+                              <p role={item.status === "failed" ? "alert" : "status"} className="font-mono text-[9px] text-[#ffbf00]/75 mt-2">
+                                {item.fallbackReason ?? item.errorCode}
+                              </p>
+                            )}
+                            {evidenceIdsForTrace(item).length > 0 && (
+                              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                <span className="font-mono text-[8px] uppercase tracking-[0.16em] text-[#8ba18b]/60">Evidence</span>
+                                {evidenceIdsForTrace(item).map((evidenceId) => (
+                                  <button
+                                    key={`${item.id}_${evidenceId}`}
+                                    type="button"
+                                    onClick={() => openEvidence(evidenceId)}
+                                    className="border border-[#2d4f2d]/40 px-2 py-1 text-[8px] uppercase tracking-[0.12em] text-[#d4d4c8]/75 hover:border-[#ffbf00]/50 hover:text-[#ffbf00] bg-black/20 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffbf00]/70"
+                                  >
+                                    {evidenceId}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
+
+            {/* EVIDENCE VIEWER */}
+            {evidenceInspection && (
+              <div className="glass-panel p-5 border border-[#2d4f2d]/30 rounded-xl bg-[#050805]/70">
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div>
+                    <h4 className="font-serif text-[#d4d4c8] tracking-[0.08em] font-light flex items-center gap-2 uppercase">
+                      <Eye className="w-4 h-4 text-[#ffbf00]" />
+                      Evidence Viewer
+                    </h4>
+                    <p className="font-mono text-[8px] uppercase tracking-[0.16em] text-[#8ba18b]/60 mt-1 break-all">
+                      {evidenceInspection.id}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Close evidence viewer"
+                    onClick={() => setSelectedEvidenceId(null)}
+                    className="border border-[#2d4f2d]/40 p-1.5 text-[#8ba18b] hover:text-[#ffbf00] hover:border-[#ffbf00]/50 bg-transparent focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffbf00]/70"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {!evidenceInspection.found ? (
+                  <p role="status" className="font-serif italic text-xs text-[#ffbf00]/80">
+                    This evidence reference is persisted in a trace or proposal, but the evidence record is missing from storage.
+                  </p>
+                ) : (
+                  <div className="grid gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[9px] uppercase tracking-[0.14em] text-[#8ba18b]/75">
+                      <span>Source // {evidenceInspection.evidence.sourceType}</span>
+                      <span>Schema // v{evidenceInspection.evidence.schemaVersion}</span>
+                      <span>Timestamp // {new Date(evidenceInspection.evidence.timestamp).toLocaleString()}</span>
+                      <span>Event // {evidenceInspection.evidence.sourceEventId ?? "none"}</span>
+                      <span>Workflows // {evidenceInspection.relatedWorkflowIds.join(", ") || "none"}</span>
+                      <span>Grounding // {evidenceInspection.groundingLabel}</span>
+                    </div>
+                    <pre className="max-h-48 overflow-auto rounded border border-[#2d4f2d]/20 bg-black/30 p-3 text-[10px] leading-relaxed text-[#d4d4c8]/80 whitespace-pre-wrap break-words">
+                      {JSON.stringify(evidenceInspection.payload, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* HUMAN APPROVAL PANEL */}
             <div className="glass-panel p-5 border border-[#2d4f2d]/30 rounded-xl bg-[#050805]/70">
@@ -668,45 +815,91 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
                 <ShieldCheck className="w-4 h-4 text-[#ffbf00]" />
                 Human Approval
               </h4>
+              {proposalError && (
+                <p role="alert" className="mb-3 border border-red-900/40 bg-red-950/20 p-3 font-serif text-xs text-red-200">
+                  {proposalError}
+                </p>
+              )}
+              {exportStatus && (
+                <p role="status" className="mb-3 border border-[#2d4f2d]/30 bg-black/20 p-3 font-serif text-xs text-[#8ba18b]">
+                  {exportStatus}
+                </p>
+              )}
               {proposals.length === 0 ? (
                 <p className="font-serif italic text-xs text-[#8ba18b]/60">No intervention proposals are pending in this chamber.</p>
               ) : (
                 <div className="flex flex-col gap-3">
                   {[...proposals].reverse().map((proposal) => {
-                    const decided = proposal.status !== "pending";
+                    const display = proposalDisplayState(proposal, proposalBusyId);
                     return (
                       <div key={proposal.id} className="border border-[#2d4f2d]/25 bg-black/25 rounded p-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#ffbf00]">
-                              {proposal.action} // {proposal.riskLevel} risk
+                              {proposal.action} // {display.riskLabel}
                             </div>
                             <p className="font-serif text-xs text-[#d4d4c8]/85 mt-2 leading-relaxed">{proposal.reason}</p>
                           </div>
-                          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#8ba18b]">{proposal.status}</span>
+                          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#8ba18b]">{display.statusLabel}</span>
                         </div>
-                        <p className="font-mono text-[8px] text-[#8ba18b]/60 mt-3 break-all">
-                          Evidence: {proposal.evidenceIds.join(", ") || "none"}
+                        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono text-[8px] uppercase tracking-[0.16em] text-[#8ba18b]/60">Evidence</span>
+                          {proposal.evidenceIds.length === 0 ? (
+                            <span className="font-mono text-[8px] text-[#8ba18b]/50">none</span>
+                          ) : proposal.evidenceIds.map((evidenceId) => (
+                            <button
+                              key={`${proposal.id}_${evidenceId}`}
+                              type="button"
+                              onClick={() => openEvidence(evidenceId)}
+                              className="border border-[#2d4f2d]/40 px-2 py-1 text-[8px] uppercase tracking-[0.12em] text-[#d4d4c8]/75 hover:border-[#ffbf00]/50 hover:text-[#ffbf00] bg-black/20 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffbf00]/70"
+                            >
+                              {evidenceId}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-[#8ba18b]/70 mt-3">
+                          Lifecycle // {display.executionLabel}
                         </p>
+                        {proposal.decision && (
+                          <p className="font-mono text-[8px] uppercase tracking-[0.14em] text-[#8ba18b]/55 mt-2">
+                            Decision // {proposal.decision.decidedBy} // {new Date(proposal.decision.decidedAt).toLocaleString()}
+                          </p>
+                        )}
                         <p className="font-serif italic text-[11px] text-[#8ba18b]/70 mt-3">
                           Approval records consent only; high-impact execution remains policy-bound and is not performed by the Archivist.
                         </p>
                         <div className="mt-4 flex flex-col sm:flex-row gap-3">
                           <button
+                            type="button"
                             onClick={() => decide(proposal.id, "approved")}
-                            disabled={decided || proposalBusyId === proposal.id}
-                            className="flex-1 border border-[#ffbf00]/30 py-2.5 px-4 text-[10px] uppercase tracking-[0.25em] text-[#ffbf00] hover:bg-[#ffbf00]/5 disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer bg-transparent"
+                            disabled={display.readOnly || display.controlsDisabled}
+                            aria-busy={proposalBusyId === proposal.id}
+                            className="flex-1 border border-[#ffbf00]/30 py-2.5 px-4 text-[10px] uppercase tracking-[0.25em] text-[#ffbf00] hover:bg-[#ffbf00]/5 disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer bg-transparent focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffbf00]/70"
                           >
-                            Approve
+                            {proposalBusyId === proposal.id ? "Recording..." : "Approve"}
                           </button>
                           <button
+                            type="button"
                             onClick={() => decide(proposal.id, "rejected")}
-                            disabled={decided || proposalBusyId === proposal.id}
-                            className="flex-1 border border-[#2d4f2d]/50 py-2.5 px-4 text-[10px] uppercase tracking-[0.25em] text-[#8ba18b] hover:bg-[#d4d4c8]/5 disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer bg-transparent"
+                            disabled={display.readOnly || display.controlsDisabled}
+                            aria-busy={proposalBusyId === proposal.id}
+                            className="flex-1 border border-[#2d4f2d]/50 py-2.5 px-4 text-[10px] uppercase tracking-[0.25em] text-[#8ba18b] hover:bg-[#d4d4c8]/5 disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer bg-transparent focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffbf00]/70"
                           >
-                            Reject
+                            {proposalBusyId === proposal.id ? "Recording..." : "Reject"}
                           </button>
                         </div>
+                        {display.canExport && (
+                          <button
+                            type="button"
+                            onClick={() => exportApprovedProposal(proposal)}
+                            disabled={exportBusyId === proposal.id}
+                            aria-busy={exportBusyId === proposal.id}
+                            className="mt-3 w-full border border-[#ffbf00]/25 py-2.5 px-4 text-[10px] uppercase tracking-[0.22em] text-[#ffbf00] hover:bg-[#ffbf00]/5 disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer bg-transparent focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffbf00]/70 flex items-center justify-center gap-2"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            {exportBusyId === proposal.id ? "Preparing Export" : "Prepare Confirmed Export"}
+                          </button>
+                        )}
                       </div>
                     );
                   })}
