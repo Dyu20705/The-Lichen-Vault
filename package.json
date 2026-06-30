@@ -12,6 +12,8 @@
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true})\"",
     "lint": "tsc --noEmit",
     "test": "vitest run",
+    "eval": "vitest run src/application/workflow.evaluation.test.ts src/mcp/vaultTools.test.ts",
+    "mcp:dev": "tsx src/mcp/server.ts",
     "release:check": "npm run lint && npm run test && npm run build"
   },
   "keywords": [
@@ -27,7 +29,9 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@google/adk": "^1.3.0",
     "@google/genai": "^2.4.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",

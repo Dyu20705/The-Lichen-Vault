@@ -88,7 +88,7 @@ describe("Domain Models & Invariant Rules", () => {
           observationNumber: 1,
           text: "Pristine orange thallus thallus has formed custom structures.",
           evidenceIds: ["ev_1"],
-          confidence: 0.95,
+          confidence: null,
           generatedBy: "gemini",
           verificationStatus: "grounded"
         }
@@ -146,7 +146,7 @@ describe("Domain Models & Invariant Rules", () => {
             observationNumber: 1,
             text: "Unlabeled reference source.",
             evidenceIds: [], // Empty evidenceIds triggers failure
-            confidence: 0.9,
+            confidence: null,
             generatedBy: "gemini" as const,
             verificationStatus: "grounded" as const
           }
@@ -289,7 +289,7 @@ describe("Domain Models & Invariant Rules", () => {
         },
         evidenceIds: ["ev_lux_baseline"],
         reason: "Restore standard glow coefficient.",
-        confidence: 0.81,
+        heuristicConfidence: 0.81,
         riskLevel: "low",
         status: "pending",
         createdAt: "2026-06-20T12:00:00Z"
@@ -311,7 +311,7 @@ describe("Domain Models & Invariant Rules", () => {
         },
         evidenceIds: [],
         reason: "Adjust to high intensity.",
-        confidence: 0.9,
+        heuristicConfidence: 0.9,
         riskLevel: "medium",
         status: "pending",
         createdAt: "2026-06-20T12:00:00Z"
@@ -331,7 +331,7 @@ describe("Domain Models & Invariant Rules", () => {
         },
         evidenceIds: [],
         reason: "Let specimen rest.",
-        confidence: 0.7,
+        heuristicConfidence: 0.7,
         riskLevel: "low",
         status: "pending", // active pending proposal!
         createdAt: "2026-06-20T12:00:00Z",

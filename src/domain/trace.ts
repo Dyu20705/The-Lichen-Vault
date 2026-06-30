@@ -16,6 +16,10 @@ export interface TraceEvent {
   durationMs?: number;
   summary: string;
   errorCode?: string;
+  errorCategory?: "validation" | "model" | "storage" | "policy" | "unknown";
+  fallbackReason?: string;
+  promptVersion?: string;
+  model?: string;
 }
 
 export function validateTraceEvent(trace: TraceEvent): void {

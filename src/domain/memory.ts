@@ -82,7 +82,7 @@ export interface ArchivalEntryCreatedEvent extends BaseSpecimenEvent {
   payload: {
     text: string;
     observationNumber: number;
-    confidence: number;
+    heuristicConfidence: number | null;
     generatedBy: "gemini" | "local_fallback";
     promptVersion?: string;
     model?: string;
@@ -96,7 +96,7 @@ export interface InterventionProposedEvent extends BaseSpecimenEvent {
     action: "adjust_light" | "adjust_humidity" | "pause_growth" | "merge_records" | "delete_specimen" | "export_data";
     parameters: Record<string, any>;
     reason: string;
-    confidence: number;
+    heuristicConfidence: number;
     riskLevel: "low" | "medium" | "high";
   };
 }

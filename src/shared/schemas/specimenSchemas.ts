@@ -12,7 +12,9 @@ export const ArchivalObservationSchema = z.object({
   evidenceIds: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).nullable().optional(),
   generatedBy: ObservationOriginSchema.optional(),
-  verificationStatus: VerificationStatusSchema.optional()
+  verificationStatus: VerificationStatusSchema.optional(),
+  promptVersion: z.string().optional(),
+  model: z.string().optional()
 });
 
 export const LegacyMemorySchema = z.object({

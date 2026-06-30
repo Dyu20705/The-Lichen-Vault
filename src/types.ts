@@ -7,4 +7,5 @@ export interface BreathRecording {
   duration: number; // in seconds
   intensity: number; // average level (0 to 100)
   pikes: number; // rhythmic intensity spikes
+  captureMode?: "microphone" | "simulated";
 }

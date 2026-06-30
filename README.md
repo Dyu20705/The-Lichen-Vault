@@ -15,7 +15,7 @@
   <img alt="Validation" src="https://img.shields.io/badge/Zod-runtime%20schemas-10b981?style=for-the-badge" />
 </p>
 
-The Lichen Vault turns a three-breath deposition ritual into a persistent procedural lichen specimen. The current checkpoint keeps the original museum-cabinet experience while adding a validated domain and persistence foundation for later agent work.
+The Lichen Vault turns a three-breath deposition ritual into a persistent procedural lichen specimen. The current checkpoint keeps the original museum-cabinet experience while adding a real evidence-grounded agent workflow, trace inspection, human approval controls, ADK-backed Archivist integration, and a Vault MCP surface.
 
 ## Preview
 
@@ -37,7 +37,10 @@ Most generative demos stop at the moment of creation. This project explores the 
 - Legacy record migration with deterministic missing seed/time derivation.
 - Corruption recovery UI that exposes the failed key, reason, raw payload, retry, copy, ignore, and explicit reset paths.
 - Event ledger support with idempotent duplicate appends and deterministic ordering.
-- Optional Gemini-generated archival observations with local fallback when no key is configured.
+- Evidence-grounded Archivist observations through a controlled ADK adapter, with local fallback when no key is configured or model output fails validation.
+- Persisted workflow sessions, trace events, evidence records, and intervention proposals.
+- Human approval panel for high-risk proposals; approval/rejection is idempotent and cannot be performed by an agent context.
+- Vault MCP stdio server with schema-validated tools and policy-protected writes.
 
 ## Completed Architecture
 
@@ -45,23 +48,19 @@ The current foundation includes modular domain entities for specimens, evidence 
 
 Persistence uses a transaction-like staged write with rollback across specimen snapshots and event records. Browser storage cannot provide true multi-key atomicity, so the implementation validates first, captures previous values, writes both stores, verifies the result, and restores previous values if a staged write fails.
 
-## Agent Roadmap
+## Agent Workflow
 
-Planned checkpoints will build on this foundation:
+The implemented vertical slice is:
 
-- Semantic memory over specimen evidence and observations.
-- Multi-agent orchestration for anomaly investigation and care proposals.
-- Human approval workflows for risky interventions.
-- Evaluation harnesses for provenance, fallback behavior, and recovery quality.
-- Deployment hardening, health endpoints, structured logging, and production observability.
+Capture or simulation -> Signal Curator -> evidence persistence -> Growth Simulator -> Archivist Agent -> policy validation -> event persistence -> trace persistence -> UI update.
 
-These capabilities are planned. They are not claimed as complete in this checkpoint.
+Signal curation, quality checks, seed generation, growth simulation, policy, persistence, migration, and evidence validation are deterministic. The LLM is used only by the Archivist to write a short museum-style observation from persisted evidence. If ADK/model access fails, the workflow writes a local fallback observation and a fallback trace.
 
 ## Domain And Persistence
 
 `Specimen` is the canonical persisted domain entity. Legacy observations are not upgraded into false certainty:
 
-- `gemini` observations require evidence ids, numeric confidence, and `grounded` verification.
+- `gemini` observations require real evidence ids and `grounded` verification; confidence remains `null` unless a transparent heuristic is explicitly supplied.
 - `local_fallback` observations may omit evidence and are marked `fallback`.
 - `legacy_unverified` observations preserve original text with empty evidence, `null` confidence, and `unverified` status.
 
@@ -71,7 +70,7 @@ Migration is deterministic and idempotent: the same legacy record produces the s
 
 Specimens are stored locally in the browser under The Lichen Vault storage keys. Breath audio is not uploaded; the microphone stream is used client-side to derive simple duration, intensity, and cadence metrics during the ritual.
 
-`GEMINI_API_KEY` is optional. Without it, the app remains functional through local fallback observation text. When Gemini is enabled, the server sends only specimen context such as name, age label, and growth stage to `/api/generate-fragment`.
+`GEMINI_API_KEY` is optional. Without it, the app remains functional through local fallback observation text. When Gemini is enabled, the server sends only bounded specimen context and persisted evidence summaries to `/api/archivist/observe`. Raw microphone audio is never uploaded, logged, or sent to a model.
 
 ## Requirements
 
@@ -104,6 +103,8 @@ Cloud Run secrets and service URLs should be injected through deployment configu
 npm run dev            # Start the Express + Vite development server
 npm run lint           # Type-check the project
 npm run test           # Run Vitest tests
+npm run eval           # Run fake-model workflow and MCP evaluation tests
+npm run mcp:dev        # Start the Vault MCP stdio server
 npm run build          # Build the client and bundled production server
 npm run start          # Serve the production build from dist/
 npm run preview        # Build, then start the production server
@@ -118,12 +119,27 @@ npm run release:check
 npm run start
 ```
 
-The production server serves `dist/`, falls back to `index.html` for SPA routes, listens on `0.0.0.0`, and respects a valid `PORT` environment variable. Cloud Run readiness requires later deployment work such as health checks, container configuration, and operational logging.
+The production server serves `dist/`, falls back to `index.html` for SPA routes, listens on `0.0.0.0`, and respects a valid `PORT` environment variable. `/health` returns service status, model configuration state, ADK package participation, and current server time.
+
+## Demo Flow
+
+```bash
+npm ci
+npm run dev
+```
+
+Open `http://localhost:3000`, perform the three-breath ritual, then inspect the new specimen in the cabinet. The Trace panel shows persisted workflow steps. The Human Approval panel shows the high-risk export proposal; approving or rejecting it records an idempotent event and trace.
+
+## Architecture And Evaluation Docs
+
+- `docs/architecture.md`
+- `docs/evaluation.md`
 
 ## Limitations
 
 - Browser `localStorage` provides best-effort consistency only; the repository implements staged writes with rollback, not true database transactions.
-- The observation API has graceful local fallback, but no production observability or rate limiting yet.
+- The MCP stdio server uses an in-memory repository by default; browser localStorage remains the app's primary local-first store.
+- The ADK Archivist adapter is server-side only. The primary test suite uses fake model behavior and does not require a real Gemini key.
 - Screenshots document the current visual experience; they are not an automated visual regression suite.
 
 ## Project Evolution

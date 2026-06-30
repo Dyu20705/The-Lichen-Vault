@@ -56,7 +56,8 @@ export interface InterventionProposal {
   params: InterventionParams;
   evidenceIds: string[]; // references to deterministic evidence records
   reason: string;
-  confidence: number; // [0, 1]
+  heuristicConfidence: number; // deterministic support score, not a calibrated probability
+  proposedBy?: "system" | "archivist" | "tool" | "user";
   riskLevel: RiskLevel;
   status: InterventionStatus;
   createdAt: string; // ISO-8601
@@ -70,8 +71,8 @@ export function validateInterventionProposal(proposal: InterventionProposal): vo
   if (!proposal.specimenId || proposal.specimenId.trim() === "") {
     throw new InvariantError("Specimen correlation identifier cannot be empty.");
   }
-  if (proposal.confidence < 0 || proposal.confidence > 1) {
-    throw new InvariantError("Confidence must remain in [0, 1].");
+  if (proposal.heuristicConfidence < 0 || proposal.heuristicConfidence > 1) {
+    throw new InvariantError("Heuristic confidence must remain in [0, 1].");
   }
   if (!proposal.createdAt || isNaN(Date.parse(proposal.createdAt))) {
     throw new InvariantError("Timestamp must be a valid ISO-8601 string.");

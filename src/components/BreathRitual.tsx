@@ -177,6 +177,7 @@ export const BreathRitual: React.FC<BreathRitualProps> = ({
       duration: Number(durationSec.toFixed(2)),
       intensity: averageIntensity,
       pikes,
+      captureMode: micAllowed ? "microphone" : "simulated",
     };
 
     const updatedRecords = [...recordings, newRecord];

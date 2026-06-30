@@ -28,7 +28,11 @@ export const TraceEventSchema = z.object({
   outputEvidenceIds: z.array(z.string()).default([]),
   durationMs: z.number().int().nonnegative().optional(),
   summary: z.string().min(1),
-  errorCode: z.string().optional()
+  errorCode: z.string().optional(),
+  errorCategory: z.enum(["validation", "model", "storage", "policy", "unknown"]).optional(),
+  fallbackReason: z.string().optional(),
+  promptVersion: z.string().optional(),
+  model: z.string().optional()
 });
 
 export type WorkflowSessionDTO = z.infer<typeof WorkflowSessionSchema>;

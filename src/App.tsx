@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
 import { BookOpen, Wind, Eye, ShieldAlert } from "lucide-react";
 import { LichenOrganism, BreathRecording } from "./types";
-import { generateLichenFromBreaths } from "./utils/generator";
 import { BreathRitual } from "./components/BreathRitual";
 import { VaultCabinet } from "./components/VaultCabinet";
 import { LichenRenderer } from "./components/LichenRenderer";
 import { LocalStorageSpecimenRepository, RecoverySnapshot } from "./infrastructure/persistence/localStorageSpecimenRepository";
+import { runBreathWorkflow } from "./application/vaultWorkflow";
+import { decideProposal, DecisionKind } from "./application/policy";
 
 const repository = new LocalStorageSpecimenRepository();
 
@@ -59,19 +60,26 @@ export default function App() {
   const handleBreathCompleted = (recordings: BreathRecording[]) => {
     setView("germinating");
     setMitosisProgress(0);
-
-    // Simulate slow mysterious process of structural cell division
-    const newOrganism = generateLichenFromBreaths(recordings);
-    setNewlyGerminated(newOrganism);
+    let workflowSpecimenId: string | null = null;
 
     const interval = setInterval(() => {
       setMitosisProgress((prev) => {
         if (prev >= 100) {
           clearInterval(interval);
           
-          // Complete and persist through repository layer
-          repository.saveSpecimen(newOrganism)
-            .then(() => repository.listSpecimens())
+          runBreathWorkflow({
+            recordings,
+            repository,
+            captureMode: recordings.some((item) => item.captureMode === "microphone") ? "microphone" : "simulated"
+          })
+            .then((result) => {
+              workflowSpecimenId = result.specimenId;
+              return repository.getSpecimen(result.specimenId);
+            })
+            .then((newOrganism) => {
+              if (newOrganism) setNewlyGerminated(newOrganism);
+              return repository.listSpecimens();
+            })
             .then((list) => {
               setOrganisms(list);
               setRecoverySnapshot(null);
@@ -89,6 +97,11 @@ export default function App() {
           
           // Transition to the reveal step
           setTimeout(() => {
+            if (workflowSpecimenId) {
+              repository.getSpecimen(workflowSpecimenId).then((fresh) => {
+                if (fresh) setNewlyGerminated(fresh);
+              }).catch(() => {});
+            }
             setView("reveal");
           }, 600);
           return 100;
@@ -96,6 +109,35 @@ export default function App() {
         return prev + 4;
       });
     }, 120);
+  };
+
+  const handleDecideProposal = async (proposalId: string, decision: DecisionKind) => {
+    const result = await decideProposal({
+      repo: repository,
+      proposalId,
+      decision,
+      context: {
+        actor: "user",
+        userId: "local_custodian",
+        actionNonce: `${proposalId}_${decision}_${Date.now()}`
+      },
+      decidedAt: new Date().toISOString()
+    });
+    await repository.appendTrace({
+      id: `tr_${proposalId}_${decision}`,
+      workflowId: result.event.id,
+      specimenId: result.proposal.specimenId,
+      timestamp: new Date().toISOString(),
+      actor: "policy",
+      operation: `Intervention ${decision}`,
+      status: "succeeded",
+      inputEvidenceIds: result.proposal.evidenceIds,
+      outputEvidenceIds: [],
+      durationMs: 0,
+      summary: result.changed ? `Proposal ${decision} by local custodian.` : `Proposal was already ${result.proposal.status}.`
+    });
+    const list = await repository.listSpecimens();
+    setOrganisms(list);
   };
 
   const handleUpdateOrganismInVault = async (updated: LichenOrganism) => {
@@ -396,6 +438,10 @@ export default function App() {
                 organisms={organisms}
                 onBackToLanding={() => setView("landing")}
                 onUpdateOrganism={handleUpdateOrganismInVault}
+                onLoadTraces={(specimenId) => repository.listTraces(specimenId)}
+                onLoadEvidence={(specimenId) => repository.listEvidence(specimenId)}
+                onLoadProposals={(specimenId) => repository.listProposals(specimenId)}
+                onDecideProposal={handleDecideProposal}
               />
             </div>
           )}

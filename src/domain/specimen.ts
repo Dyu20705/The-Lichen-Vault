@@ -10,9 +10,11 @@ export interface ArchivalObservation {
   observationNumber: number;
   text: string;
   evidenceIds?: string[]; // reference ids used to ground the report
-  confidence?: number | null; // [0, 1] or null
+  confidence?: number | null; // null unless a transparent heuristic explicitly sets it
   generatedBy?: ObservationOrigin;
   verificationStatus?: VerificationStatus;
+  promptVersion?: string;
+  model?: string;
 }
 
 export interface Specimen {
@@ -93,9 +95,6 @@ export function validateSpecimen(specimen: Specimen): void {
       if (obs.generatedBy === "gemini") {
         if (!obs.evidenceIds || obs.evidenceIds.length === 0) {
           throw new InvariantError("Gemini observations must contain at least one evidence reference.");
-        }
-        if (typeof obs.confidence !== "number") {
-          throw new InvariantError("Gemini observations must contain numeric confidence.");
         }
         if (obs.verificationStatus !== "grounded") {
           throw new InvariantError("Gemini observations must be marked grounded.");

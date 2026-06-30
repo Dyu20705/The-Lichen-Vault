@@ -1,10 +1,28 @@
-import { Specimen, SpecimenEvent, validateSpecimen, validateSpecimenEvent } from "../../domain";
+import {
+  EvidenceRecord,
+  InterventionProposal,
+  Specimen,
+  SpecimenEvent,
+  TraceEvent,
+  WorkflowSession,
+  validateEvidenceRecord,
+  validateInterventionProposal,
+  validateSpecimen,
+  validateSpecimenEvent,
+  validateTraceEvent,
+  validateWorkflowSession
+} from "../../domain";
 import { MigrationError, StorageCorruptionError, StorageError, TransactionRollbackError } from "../../domain/errors";
 import {
   SpecimenEventSchema,
   SpecimenEventStorageEnvelopeSchema,
   SpecimenSchema,
-  SpecimenStorageEnvelopeSchema
+  SpecimenStorageEnvelopeSchema,
+  EvidenceRecordSchema,
+  EvidenceStorageEnvelopeSchema,
+  InterventionProposalSchema,
+  TraceEventSchema,
+  WorkflowSessionSchema
 } from "../../shared/schemas";
 import { SpecimenRepository } from "./specimenRepository";
 
@@ -168,6 +186,10 @@ export function migrateLichenOrganismToSpecimen(rawInput: unknown): Specimen {
 export class LocalStorageSpecimenRepository implements SpecimenRepository {
   private specimenKey = "lichen_vault_flora";
   private eventKey = "lichen_vault_events";
+  private evidenceKey = "lichen_vault_evidence";
+  private workflowKey = "lichen_vault_workflows";
+  private traceKey = "lichen_vault_traces";
+  private proposalKey = "lichen_vault_proposals";
 
   constructor(specimenKey?: string, eventKey?: string) {
     if (specimenKey) this.specimenKey = specimenKey;
@@ -188,6 +210,10 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
   resetStorage(): void {
     localStorage.removeItem(this.specimenKey);
     localStorage.removeItem(this.eventKey);
+    localStorage.removeItem(this.evidenceKey);
+    localStorage.removeItem(this.workflowKey);
+    localStorage.removeItem(this.traceKey);
+    localStorage.removeItem(this.proposalKey);
   }
 
   private parseJson(rawPayload: string, storageKey: string): unknown {
@@ -267,6 +293,47 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
       events
     });
     localStorage.setItem(this.eventKey, JSON.stringify(envelope));
+  }
+
+  private readEvidenceEnvelope(): EvidenceRecord[] {
+    const rawPayload = localStorage.getItem(this.evidenceKey);
+    if (rawPayload === null) return [];
+    const parsed = this.parseJson(rawPayload, this.evidenceKey);
+    const envelope = EvidenceStorageEnvelopeSchema.safeParse(parsed);
+    if (!envelope.success) {
+      throw new StorageCorruptionError("Evidence storage envelope failed validation.", this.evidenceKey, rawPayload, envelope.error.message);
+    }
+    return envelope.data.evidence.map((raw) => {
+      const evidence = EvidenceRecordSchema.parse(raw) as EvidenceRecord;
+      validateEvidenceRecord(evidence);
+      return evidence;
+    });
+  }
+
+  private writeEvidence(evidence: EvidenceRecord[]): void {
+    const envelope = EvidenceStorageEnvelopeSchema.parse({
+      schemaVersion: 1,
+      evidence
+    });
+    localStorage.setItem(this.evidenceKey, JSON.stringify(envelope));
+  }
+
+  private readArrayEnvelope<T>(key: string, label: string, schemaVersion: 1 | 2, itemKey: string, itemSchema: { parse(value: unknown): T }, validate: (value: T) => void): T[] {
+    const rawPayload = localStorage.getItem(key);
+    if (rawPayload === null) return [];
+    const parsed = this.parseJson(rawPayload, key);
+    if (!isRecord(parsed) || parsed.schemaVersion !== schemaVersion || !Array.isArray(parsed[itemKey])) {
+      throw new StorageCorruptionError(`${label} storage envelope failed validation.`, key, rawPayload, `Expected v${schemaVersion} ${itemKey} array.`);
+    }
+    return parsed[itemKey].map((raw) => {
+      const item = itemSchema.parse(raw);
+      validate(item);
+      return item;
+    });
+  }
+
+  private writeArrayEnvelope<T>(key: string, schemaVersion: 1 | 2, itemKey: string, items: T[]): void {
+    localStorage.setItem(key, JSON.stringify({ schemaVersion, [itemKey]: items }));
   }
 
   async getSpecimen(id: string): Promise<Specimen | null> {
@@ -361,5 +428,79 @@ export class LocalStorageSpecimenRepository implements SpecimenRepository {
       events = events.slice(-options.limit);
     }
     return events;
+  }
+
+  async appendEvidence(evidence: EvidenceRecord): Promise<void> {
+    const parsed = EvidenceRecordSchema.parse(evidence) as EvidenceRecord;
+    validateEvidenceRecord(parsed);
+    const existing = this.readEvidenceEnvelope();
+    if (existing.some((item) => item.id === parsed.id)) return;
+    this.writeEvidence([...existing, parsed]);
+  }
+
+  async getEvidence(id: string): Promise<EvidenceRecord | null> {
+    return this.readEvidenceEnvelope().find((item) => item.id === id) ?? null;
+  }
+
+  async listEvidence(specimenId: string): Promise<EvidenceRecord[]> {
+    return this.readEvidenceEnvelope()
+      .filter((item) => item.specimenId === specimenId)
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id));
+  }
+
+  async saveWorkflow(session: WorkflowSession): Promise<void> {
+    const parsed = WorkflowSessionSchema.parse(session) as WorkflowSession;
+    validateWorkflowSession(parsed);
+    const workflows = this.readArrayEnvelope(this.workflowKey, "Workflow", 1, "workflows", WorkflowSessionSchema, validateWorkflowSession);
+    const next = workflows.some((item) => item.id === parsed.id)
+      ? workflows.map((item) => item.id === parsed.id ? parsed : item)
+      : [...workflows, parsed];
+    this.writeArrayEnvelope(this.workflowKey, 1, "workflows", next);
+  }
+
+  async getWorkflow(id: string): Promise<WorkflowSession | null> {
+    return this.readArrayEnvelope(this.workflowKey, "Workflow", 1, "workflows", WorkflowSessionSchema, validateWorkflowSession)
+      .find((item) => item.id === id) ?? null;
+  }
+
+  async listWorkflows(specimenId: string): Promise<WorkflowSession[]> {
+    return this.readArrayEnvelope(this.workflowKey, "Workflow", 1, "workflows", WorkflowSessionSchema, validateWorkflowSession)
+      .filter((item) => item.specimenId === specimenId)
+      .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt) || a.id.localeCompare(b.id));
+  }
+
+  async appendTrace(trace: TraceEvent): Promise<void> {
+    const parsed = TraceEventSchema.parse(trace) as TraceEvent;
+    validateTraceEvent(parsed);
+    const traces = this.readArrayEnvelope(this.traceKey, "Trace", 1, "traces", TraceEventSchema, validateTraceEvent);
+    if (traces.some((item) => item.id === parsed.id)) return;
+    this.writeArrayEnvelope(this.traceKey, 1, "traces", [...traces, parsed]);
+  }
+
+  async listTraces(specimenId: string, workflowId?: string): Promise<TraceEvent[]> {
+    return this.readArrayEnvelope(this.traceKey, "Trace", 1, "traces", TraceEventSchema, validateTraceEvent)
+      .filter((item) => item.specimenId === specimenId && (!workflowId || item.workflowId === workflowId))
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id));
+  }
+
+  async saveProposal(proposal: InterventionProposal): Promise<void> {
+    const parsed = InterventionProposalSchema.parse(proposal) as InterventionProposal;
+    validateInterventionProposal(parsed);
+    const proposals = this.readArrayEnvelope(this.proposalKey, "Proposal", 1, "proposals", InterventionProposalSchema, validateInterventionProposal) as InterventionProposal[];
+    const next = proposals.some((item) => item.id === parsed.id)
+      ? proposals.map((item) => item.id === parsed.id ? parsed : item)
+      : [...proposals, parsed];
+    this.writeArrayEnvelope(this.proposalKey, 1, "proposals", next);
+  }
+
+  async getProposal(id: string): Promise<InterventionProposal | null> {
+    return (this.readArrayEnvelope(this.proposalKey, "Proposal", 1, "proposals", InterventionProposalSchema, validateInterventionProposal) as InterventionProposal[])
+      .find((item) => item.id === id) ?? null;
+  }
+
+  async listProposals(specimenId: string): Promise<InterventionProposal[]> {
+    return (this.readArrayEnvelope(this.proposalKey, "Proposal", 1, "proposals", InterventionProposalSchema, validateInterventionProposal) as InterventionProposal[])
+      .filter((item) => item.specimenId === specimenId)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id));
   }
 }

@@ -1,25 +1,41 @@
 import React, { useState, useEffect } from "react";
-import { BookOpen, Calendar, Hourglass, ChevronLeft, RefreshCw, Layers, Sparkles } from "lucide-react";
+import { BookOpen, Calendar, Hourglass, ChevronLeft, RefreshCw, Layers, Sparkles, GitBranch, ShieldCheck } from "lucide-react";
 import { LichenOrganism, ArchivalObservation } from "../types";
 import { calculateGrowthState, SeededRandom } from "../utils/generator";
 import { LichenRenderer } from "./LichenRenderer";
+import { EvidenceRecord, InterventionProposal, TraceEvent } from "../domain";
+import { ArchivistResponseSchema, localArchivistFallback, toObservation } from "../application/archivist";
+import { DecisionKind } from "../application/policy";
 
 interface VaultCabinetProps {
   organisms: LichenOrganism[];
   onBackToLanding: () => void;
   onUpdateOrganism: (updated: LichenOrganism) => void;
+  onLoadTraces: (specimenId: string) => Promise<TraceEvent[]>;
+  onLoadEvidence: (specimenId: string) => Promise<EvidenceRecord[]>;
+  onLoadProposals: (specimenId: string) => Promise<InterventionProposal[]>;
+  onDecideProposal: (proposalId: string, decision: DecisionKind) => Promise<void>;
 }
 
 export const VaultCabinet: React.FC<VaultCabinetProps> = ({
   organisms,
   onBackToLanding,
   onUpdateOrganism,
+  onLoadTraces,
+  onLoadEvidence,
+  onLoadProposals,
+  onDecideProposal,
 }) => {
   const [selectedLichen, setSelectedLichen] = useState<LichenOrganism | null>(null);
   const [isGeneratingMemory, setIsGeneratingMemory] = useState<boolean>(false);
   const [currentAgeStr, setCurrentAgeStr] = useState<string>("");
   const [currentStageLabel, setCurrentStageLabel] = useState<string>("");
   const [viewingMode, setViewingMode] = useState<"containment" | "deposit">("containment");
+  const [tracePanelOpen, setTracePanelOpen] = useState<boolean>(true);
+  const [traces, setTraces] = useState<TraceEvent[]>([]);
+  const [evidence, setEvidence] = useState<EvidenceRecord[]>([]);
+  const [proposals, setProposals] = useState<InterventionProposal[]>([]);
+  const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
 
   // Helper to establish a consistent, physical "Vault Hall" location based on its seed
   const getVaultHall = (seed: number): string => {
@@ -134,38 +150,73 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
     }
   }, [selectedLichen]);
 
+  useEffect(() => {
+    if (!selectedLichen) {
+      setTraces([]);
+      setEvidence([]);
+      setProposals([]);
+      return;
+    }
+    let cancelled = false;
+    Promise.all([
+      onLoadTraces(selectedLichen.id),
+      onLoadEvidence(selectedLichen.id),
+      onLoadProposals(selectedLichen.id)
+    ]).then(([nextTraces, nextEvidence, nextProposals]) => {
+      if (cancelled) return;
+      setTraces(nextTraces);
+      setEvidence(nextEvidence);
+      setProposals(nextProposals);
+    }).catch((error) => {
+      console.error("Failed to load specimen trace data:", error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLichen]);
+
   // Request a fresh, calm observation log entry from the invisible Archivist narrator
   const drawNewArchivistObservation = async (lichenToUpdate: LichenOrganism) => {
     if (isGeneratingMemory) return;
     setIsGeneratingMemory(true);
 
     try {
-      const res = await fetch("/api/generate-fragment", {
+      const currentEvidence = evidence.length > 0 ? evidence : await onLoadEvidence(lichenToUpdate.id);
+      if (currentEvidence.length === 0) {
+        throw new Error("No persisted evidence is available for a grounded observation.");
+      }
+      const growth = calculateGrowthState(lichenToUpdate.birthTime);
+      const res = await fetch("/api/archivist/observe", {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
-           name: lichenToUpdate.name,
-           age: currentAgeStr || "0s",
-           growthStage: currentStageLabel || "thallus",
+           workflowId: `wf_manual_${Date.now()}`,
+           specimen: {
+             id: lichenToUpdate.id,
+             name: lichenToUpdate.name,
+             structure: lichenToUpdate.structure,
+             stageLabel: currentStageLabel || growth.stageLabel,
+           },
+           evidence: currentEvidence.map((item) => ({
+             id: item.id,
+             sourceType: item.sourceType,
+             timestamp: item.timestamp,
+             payload: item.payload
+           })),
          }),
       });
 
       if (!res.ok) throw new Error("Whisper matrix failed");
-      const data = await res.json();
+      const data = ArchivistResponseSchema.parse(await res.json());
       
       const currentLogs = lichenToUpdate.observations || [];
       const nextNum = currentLogs.length + 1;
-      const generatedBy = data.origin === "gemini" ? "gemini" : "local_fallback";
-      const newObs: ArchivalObservation = {
-        id: `obs_${Date.now()}_${nextNum}`,
-        timestamp: Date.now(),
+      const newObs = toObservation({
+        response: data,
         observationNumber: nextNum,
-        text: data.fragment,
-        evidenceIds: generatedBy === "gemini" ? [`archivist_request_${nextNum}`] : [],
-        confidence: generatedBy === "gemini" ? (typeof data.confidence === "number" ? data.confidence : 0.72) : null,
-        generatedBy,
-        verificationStatus: generatedBy === "gemini" ? "grounded" : "fallback",
-      };
+        timestamp: Date.now(),
+        evidence: currentEvidence
+      });
 
       const updatedLichen: LichenOrganism = {
         ...lichenToUpdate,
@@ -176,8 +227,41 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
       setSelectedLichen(updatedLichen);
     } catch (err) {
       console.error("Failed to generate archivist observation:", err);
+      const currentLogs = lichenToUpdate.observations || [];
+      const nextNum = currentLogs.length + 1;
+      const fallback = localArchivistFallback({
+        specimenName: lichenToUpdate.name,
+        stageLabel: currentStageLabel || "contained thallus",
+        reason: err instanceof Error ? err.message : "archivist_failed"
+      });
+      const newObs: ArchivalObservation = toObservation({
+        response: fallback,
+        observationNumber: nextNum,
+        timestamp: Date.now(),
+        evidence: []
+      });
+      const updatedLichen: LichenOrganism = {
+        ...lichenToUpdate,
+        observations: [...currentLogs, newObs],
+      };
+      onUpdateOrganism(updatedLichen);
+      setSelectedLichen(updatedLichen);
     } finally {
       setIsGeneratingMemory(false);
+    }
+  };
+
+  const decide = async (proposalId: string, decision: DecisionKind) => {
+    if (!selectedLichen || proposalBusyId) return;
+    setProposalBusyId(proposalId);
+    try {
+      await onDecideProposal(proposalId, decision);
+      const nextProposals = await onLoadProposals(selectedLichen.id);
+      const nextTraces = await onLoadTraces(selectedLichen.id);
+      setProposals(nextProposals);
+      setTraces(nextTraces);
+    } finally {
+      setProposalBusyId(null);
     }
   };
 
@@ -533,6 +617,101 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
                 </button>
               </div>
 
+            </div>
+
+            {/* TRACE PANEL */}
+            <div className="glass-panel p-5 border border-[#2d4f2d]/30 rounded-xl bg-[#050805]/70">
+              <button
+                onClick={() => setTracePanelOpen((open) => !open)}
+                className="w-full flex items-center justify-between text-left bg-transparent cursor-pointer"
+              >
+                <span className="font-serif text-[#d4d4c8] tracking-[0.08em] font-light flex items-center gap-2 uppercase">
+                  <GitBranch className="w-4 h-4 text-[#ffbf00]" />
+                  Workflow Trace
+                </span>
+                <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-[#8ba18b]">
+                  {tracePanelOpen ? "Collapse" : "Expand"} // {traces.length}
+                </span>
+              </button>
+              {tracePanelOpen && (
+                <div className="mt-4 flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                  {traces.length === 0 ? (
+                    <p className="font-serif italic text-xs text-[#8ba18b]/60">No workflow trace has been persisted for this historical specimen.</p>
+                  ) : traces.map((item) => (
+                    <div key={item.id} className="border border-[#2d4f2d]/25 bg-black/25 rounded p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.16em]">
+                        <span className="text-[#ffbf00]">{item.operation}</span>
+                        <span className={item.status === "failed" ? "text-red-400" : item.status === "fallback" ? "text-[#ffbf00]" : "text-[#8ba18b]"}>
+                          {item.actor} // {item.status} // {item.durationMs ?? 0} ms
+                        </span>
+                      </div>
+                      <p className="font-serif text-xs text-[#d4d4c8]/85 mt-2 leading-relaxed">{item.summary}</p>
+                      {(item.fallbackReason || item.errorCode) && (
+                        <p className="font-mono text-[9px] text-[#ffbf00]/75 mt-2">
+                          {item.fallbackReason ?? item.errorCode}
+                        </p>
+                      )}
+                      {item.inputEvidenceIds.length + item.outputEvidenceIds.length > 0 && (
+                        <p className="font-mono text-[8px] text-[#8ba18b]/60 mt-2 break-all">
+                          Evidence: {[...item.inputEvidenceIds, ...item.outputEvidenceIds].join(", ")}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* HUMAN APPROVAL PANEL */}
+            <div className="glass-panel p-5 border border-[#2d4f2d]/30 rounded-xl bg-[#050805]/70">
+              <h4 className="font-serif text-[#d4d4c8] tracking-[0.08em] font-light flex items-center gap-2 uppercase mb-4">
+                <ShieldCheck className="w-4 h-4 text-[#ffbf00]" />
+                Human Approval
+              </h4>
+              {proposals.length === 0 ? (
+                <p className="font-serif italic text-xs text-[#8ba18b]/60">No intervention proposals are pending in this chamber.</p>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {[...proposals].reverse().map((proposal) => {
+                    const decided = proposal.status !== "pending";
+                    return (
+                      <div key={proposal.id} className="border border-[#2d4f2d]/25 bg-black/25 rounded p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#ffbf00]">
+                              {proposal.action} // {proposal.riskLevel} risk
+                            </div>
+                            <p className="font-serif text-xs text-[#d4d4c8]/85 mt-2 leading-relaxed">{proposal.reason}</p>
+                          </div>
+                          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#8ba18b]">{proposal.status}</span>
+                        </div>
+                        <p className="font-mono text-[8px] text-[#8ba18b]/60 mt-3 break-all">
+                          Evidence: {proposal.evidenceIds.join(", ") || "none"}
+                        </p>
+                        <p className="font-serif italic text-[11px] text-[#8ba18b]/70 mt-3">
+                          Approval records consent only; high-impact execution remains policy-bound and is not performed by the Archivist.
+                        </p>
+                        <div className="mt-4 flex flex-col sm:flex-row gap-3">
+                          <button
+                            onClick={() => decide(proposal.id, "approved")}
+                            disabled={decided || proposalBusyId === proposal.id}
+                            className="flex-1 border border-[#ffbf00]/30 py-2.5 px-4 text-[10px] uppercase tracking-[0.25em] text-[#ffbf00] hover:bg-[#ffbf00]/5 disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer bg-transparent"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => decide(proposal.id, "rejected")}
+                            disabled={decided || proposalBusyId === proposal.id}
+                            className="flex-1 border border-[#2d4f2d]/50 py-2.5 px-4 text-[10px] uppercase tracking-[0.25em] text-[#8ba18b] hover:bg-[#d4d4c8]/5 disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer bg-transparent"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
           </div>
