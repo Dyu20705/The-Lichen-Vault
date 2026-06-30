@@ -209,10 +209,10 @@ export const BreathRitual: React.FC<BreathRitualProps> = ({
           <Wind className={`w-7 h-7 ${isPressing ? "animate-pulse text-[#ffbf00]" : "text-[#d4d4c8]"}`} />
         </div>
         <h2 className="font-serif text-3xl sm:text-4xl text-[#d4d4c8] tracking-wide font-light">
-          Biological Exhalation Ritual
+          Digital Breath Ritual
         </h2>
         <p className="font-serif italic text-[#8ba18b]/80 text-sm mt-1">
-          Each organism requires three distinct exhalations to fuse its neural hyphae.
+          Each specimen uses three distinct breath measurements to seed its procedural form.
         </p>
       </div>
 
@@ -301,15 +301,15 @@ export const BreathRitual: React.FC<BreathRitualProps> = ({
             <p className="font-serif text-lg text-[#ffbf00]/90 italic font-light">
               {step === 0 && '“Take a deep exhalation, press the plate, and let go your breath.”'}
               {step === 1 && '“The soil accepts the spore. Exhale again, slow and deep.”'}
-              {step === 2 && '“One third remains. Seal your final breath into the vacuum capsule.”'}
+              {step === 2 && '“One third remains. Commit your final breath to the local ledger.”'}
             </p>
             <p className="text-xs text-[#8ba18b] font-sans font-light mt-2">
-              (Press and hold the biological plate below for at least 1.5 seconds)
+              (Press and hold the deposition control below for at least 1.5 seconds)
             </p>
           </div>
         ) : (
           <div className="text-[#ffbf00] animate-slow-breathing">
-            <span className="font-sans text-sm tracking-widest uppercase">Capturing Biological Trace...</span>
+            <span className="font-sans text-sm tracking-widest uppercase">Capturing Derived Breath Metrics...</span>
             <p className="text-xs text-[#ffbf00]/70 font-serif italic mt-1">Keep exhalation sustained.</p>
           </div>
         )}
@@ -349,7 +349,7 @@ export const BreathRitual: React.FC<BreathRitualProps> = ({
         <div className="mt-8 flex items-center gap-2 px-4 py-2 border border-[#ffbf00]/20 bg-white/5 rounded text-[#ffbf00] max-w-sm text-left">
           <ShieldAlert className="w-5 h-5 shrink-0" />
           <span className="font-mono text-[10px] leading-relaxed">
-            Microphone permission declined. The cabinet's vacuum pumps will simulate pressure changes to proceed.
+            Microphone permission declined. The cabinet will use simulated breath metrics to proceed.
           </span>
         </div>
       )}
@@ -360,7 +360,7 @@ export const BreathRitual: React.FC<BreathRitualProps> = ({
         onClick={onCancel}
         className="mt-12 font-sans text-[10px] tracking-[0.2em] uppercase text-[#8ba18b]/50 hover:text-[#ffbf00] transition-colors cursor-pointer border-b border-[#2d4f2d]/25 pb-0.5"
       >
-        Abort Respiration Node
+        Abort Breath Capture
       </button>
     </div>
   );

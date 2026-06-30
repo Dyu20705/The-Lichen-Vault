@@ -51,12 +51,12 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
   const [exportBusyId, setExportBusyId] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
 
-  // Helper to establish a consistent, physical "Vault Hall" location based on its seed
+  // Helper to establish a consistent fictional "Vault Hall" location based on its seed
   const getVaultHall = (seed: number): string => {
     const halls = [
       "Hall of Whispering Volatiles, Shelf 14",
       "Sovereign Crypt, Alcove IX",
-      "Forgotten biological archive, Compartment XII",
+      "Forgotten digital archive, Compartment XII",
       "Monastery Cloister, Niche VII",
       "Eastern Herbarium, Drawer 03",
       "Abyssal Conservatory, Tier IV"
@@ -64,12 +64,12 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
     return halls[seed % halls.length];
   };
 
-  // Helper to get biological custodian notes
+  // Helper to get fictional custodian notes
   const getCustodianNotes = (seed: number): string => {
     const notes = [
-      "Preserved within nitrogen vacuum cylinder #107. Avoid direct solar exposure. Moisten primary membrane with distilled moisture twice per lunar cycle.",
+      "Catalogued inside simulation cylinder #107. Avoid treating the chamber labels as physical preservation instructions.",
       "Sealed under silica glass at 3.4 Pascals. Exhibits subtle expansion reactions to copper near-frequencies. Keep protective dark shutters closed.",
-      "Affixed to a pre-Cambrian basalt fragment. Continuous respiration occurs at sub-audible rhythms. Physical contact is strictly restricted.",
+      "Rendered against a basalt-like procedural substrate. Motion and age labels are deterministic display states, not biological respiration.",
       "Grown in clean quartz atmosphere. Custodian recommends comparing photographic plates during sequential solstice intervals.",
     ];
     return notes[seed % notes.length];
@@ -78,23 +78,23 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
   // Helper to map age to a mystery specimen status
   const getSpecimenStatus = (birthTime: number): string => {
     const ageMs = Date.now() - birthTime;
-    if (ageMs < 45000) return "Active mitosis // Volatiles settling";
-    if (ageMs < 300000) return "Branching hyphae established // Hermetic isolation complete";
-    return "Quiescent suspension // Deep time growth active";
+    if (ageMs < 45000) return "Newly catalogued // Metrics settling";
+    if (ageMs < 300000) return "Procedural branching established // Local record complete";
+    return "Quiet display state // Deep time simulation active";
   };
 
   // Deterministic initial observations so we can show historical book timeline on launch
   const generateInitialObservations = (seed: number, birthTime: number): ArchivalObservation[] => {
     const rand = new SeededRandom(seed);
     const obsGroup1 = [
-      "Respiration volatiles captured immediately after the physical exhalation. Condensation on internal glass dome settled within seconds.",
-      "The initial respiratory wind was locked into the hermetic grid. Liquid dynamics of the spore show high structural density.",
-      "The volatile biological breath has crossed the gate. The core cell remains locked in concentric balance."
+      "Derived breath metrics were recorded immediately after the deposition ritual. The digital dome settled into its first display state.",
+      "The initial cadence was written into the local ledger. Procedural structure shows high visual density.",
+      "The fictional breath trace crossed the gate. The rendered core remains in concentric balance."
     ];
     const obsGroup2 = [
       "A faint expansion has been registered near the lower edge of the thallus. No environmental fluctuations detected inside containment.",
       "The embryonic thallus appears to have anchored securely onto the porous rock medium. Faint gold luminescence is present in darkness.",
-      "Observations show complete biological latency. The thallus has grown slightly, branching according to a non-standard Fibonacci sequence."
+      "Observations show a quiet simulated state. The thallus display has shifted slightly, branching according to a deterministic sequence."
     ];
     
     return [
@@ -372,7 +372,7 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
                 SPECIMEN CATALOGUE // SEC-08
               </h2>
               <p className="italic text-xs text-[#8ba18b] mt-1">
-                A total of {organisms.length} vital respirate specimens permanently sealed within vacuum cylinders.
+                A total of {organisms.length} fictional digital specimens catalogued in this browser.
               </p>
             </div>
             <button
@@ -388,17 +388,17 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
             // No organisms deposited yet
             <div className="glass-panel text-center p-12 max-w-md mx-auto my-12 border border-[#2d4f2d]/30">
               <p className="font-serif italic text-lg text-[#ffbf00]/80">
-                "The ledger stands empty. No biological breath has crossed this threshold."
+                "The ledger stands empty. No breath-derived digital specimen has crossed this threshold."
               </p>
               <p className="text-xs text-[#8ba18b] font-sans mt-4 leading-relaxed">
-                Return to the entrance portal and perform the threefold breath deposit ritual to generate your first procedurally living organism.
+                Return to the entrance portal and perform the threefold breath deposit ritual to generate your first procedural digital specimen.
               </p>
               <button
                 id="empty_vault_begin_btn"
                 onClick={onBackToLanding}
                 className="mt-6 w-full border border-[#ffbf00]/30 py-3 px-6 text-[11px] uppercase tracking-[0.3em] hover:bg-[#ffbf00]/5 transition-colors duration-300 relative overflow-hidden text-[#ffbf00] cursor-pointer bg-transparent"
               >
-                Initiate Core Deposition
+                Initiate Digital Deposition
               </button>
             </div>
           ) : (
@@ -541,7 +541,7 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
             
             {/* Contemplative notice of Temporal Distance */}
             <div className="p-4 border border-[#2d4f2d]/25 bg-[#050805]/80 text-[#8ba18b]/80 rounded text-[11px] leading-relaxed italic max-w-md mx-auto text-center font-serif">
-              "This specimen requires temporal distance. Sealed securely in quartz, growth responds solely to the slow passage of consecutive sun cycles. Return in future months to compare physical alterations of the thallus. Physical change cannot be forced."
+              "This specimen requires temporal distance. The quartz chamber is fictional; display changes respond to deterministic time calculations. Return in future months to compare simulated alterations of the thallus."
             </div>
 
           </div>
@@ -563,7 +563,7 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
                 {selectedLichen.name}
               </h3>
               <p className="font-serif italic text-xs text-[#8ba18b] mt-1">
-                Lichenized cybernetic thallus grown under cold containment from captured volatile human respiratory traces.
+                Fictional digital thallus grown from local breath duration, intensity, and cadence metrics.
               </p>
 
               {/* Archival category listings (dashboard sections replaced with museum records) */}
@@ -642,10 +642,10 @@ export const VaultCabinet: React.FC<VaultCabinetProps> = ({
                   <div className="flex flex-col items-center justify-center py-10">
                     <RefreshCw className="w-8 h-8 text-[#ffbf00] animate-spin mb-3" />
                     <p className="font-mono text-[10px] text-[#ffbf00]/80 tracking-widest animate-pulse uppercase">
-                      Evoking specimen membrane echo from volatile thallus...
+                      Writing a grounded Archivist note from persisted evidence...
                     </p>
                     <p className="font-serif italic text-[11px] text-[#8ba18b]/50 mt-1 max-w-xs text-center leading-relaxed">
-                      Measuring volatile cell division speed, chronicling changes...
+                      Checking evidence references and fallback rules...
                     </p>
                   </div>
                 ) : !selectedLichen.observations || selectedLichen.observations.length === 0 ? (

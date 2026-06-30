@@ -60,55 +60,43 @@ export default function App() {
   const handleBreathCompleted = (recordings: BreathRecording[]) => {
     setView("germinating");
     setMitosisProgress(0);
-    let workflowSpecimenId: string | null = null;
-
+    let workflowFinished = false;
     const interval = setInterval(() => {
-      setMitosisProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          
-          runBreathWorkflow({
-            recordings,
-            repository,
-            captureMode: recordings.some((item) => item.captureMode === "microphone") ? "microphone" : "simulated"
-          })
-            .then((result) => {
-              workflowSpecimenId = result.specimenId;
-              return repository.getSpecimen(result.specimenId);
-            })
-            .then((newOrganism) => {
-              if (newOrganism) setNewlyGerminated(newOrganism);
-              return repository.listSpecimens();
-            })
-            .then((list) => {
-              setOrganisms(list);
-              setRecoverySnapshot(null);
-            })
-            .catch((e) => {
-              console.error("Failed to save virtual specimen thallus:", e);
-              setRecoverySnapshot(repository.getRecoverySnapshot(e) ?? {
-                storageKey: "lichen_vault_flora",
-                rawPayload: null,
-                errorCode: "SPECIMEN_SAVE_FAILED",
-                reason: e instanceof Error ? e.message : "Failed to save specimen.",
-                recoverability: "recoverable"
-              });
-            });
-          
-          // Transition to the reveal step
-          setTimeout(() => {
-            if (workflowSpecimenId) {
-              repository.getSpecimen(workflowSpecimenId).then((fresh) => {
-                if (fresh) setNewlyGerminated(fresh);
-              }).catch(() => {});
-            }
-            setView("reveal");
-          }, 600);
-          return 100;
-        }
-        return prev + 4;
-      });
+      setMitosisProgress((prev) => workflowFinished ? 100 : Math.min(92, prev + 4));
     }, 120);
+
+    runBreathWorkflow({
+      recordings,
+      repository,
+      captureMode: recordings.some((item) => item.captureMode === "microphone") ? "microphone" : "simulated"
+    })
+      .then(async (result) => {
+        const newOrganism = await repository.getSpecimen(result.specimenId);
+        if (!newOrganism) {
+          throw new Error("Workflow completed but the persisted specimen could not be read.");
+        }
+        const list = await repository.listSpecimens();
+        workflowFinished = true;
+        clearInterval(interval);
+        setMitosisProgress(100);
+        setNewlyGerminated(newOrganism);
+        setOrganisms(list);
+        setRecoverySnapshot(null);
+        setView("reveal");
+      })
+      .catch((e) => {
+        workflowFinished = true;
+        clearInterval(interval);
+        console.error("Failed to complete digital specimen workflow:", e);
+        setRecoverySnapshot(repository.getRecoverySnapshot(e) ?? {
+          storageKey: "lichen_vault_flora",
+          rawPayload: null,
+          errorCode: "SPECIMEN_WORKFLOW_FAILED",
+          reason: e instanceof Error ? e.message : "Failed to complete specimen workflow.",
+          recoverability: "recoverable"
+        });
+        setView("landing");
+      });
   };
 
   const handleDecideProposal = async (proposalId: string, decision: DecisionKind) => {
@@ -224,14 +212,14 @@ export default function App() {
                 The Lichen Vault
               </h1>
               <p className="font-sans text-[8px] tracking-[0.15em] text-[#8ba18b] uppercase">
-                Cryo-Biological Respiration Bank
+                Fictional Digital Herbarium
               </p>
             </div>
           </div>
 
           {/* Floating vault capacity stats */}
           <div className="font-sans text-[9px] text-[#8ba18b] tracking-widest text-right select-none">
-            VAULT STATUS: <span className="text-[#ffbf00] font-semibold">ACTIVE</span> // {organisms.length} PRESERVED // SEC_A
+            VAULT STATUS: <span className="text-[#ffbf00] font-semibold">ACTIVE</span> // {organisms.length} CATALOGUED // SEC_A
           </div>
         </header>
 
@@ -310,7 +298,7 @@ export default function App() {
                 </div>
 
                 <div className="absolute bottom-4 font-sans text-[8px] text-[#8ba18b]/60 tracking-widest uppercase">
-                  Awaiting Respiration Source
+                  Awaiting Breath Metrics
                 </div>
               </div>
 
@@ -321,11 +309,11 @@ export default function App() {
               
               <h2 className="text-4xl sm:text-5xl lg:text-6xl font-light text-[#d4d4c8] leading-tight tracking-[0.08em] mb-6">
                 TEMPORAL RESPIRATE SPECIMENS<br />
-                <span className="italic font-light text-[#8ba18b]/90">Department of Vital Records</span>
+                <span className="italic font-light text-[#8ba18b]/90">Department of Fictional Records</span>
               </h2>
 
               <p className="font-serif text-[#d4d4c8]/80 leading-relaxed text-sm sm:text-base max-w-xl italic mb-12">
-                A hermetic repository designed to capture and hold biological wind volatiles. Seeding successive exhalations via physical copper membrane triggers the immediate cellular mitosis of digital thallus filaments. In containment, each fused specimen grows in deep time, translating forgotten chronology back into semantic memory.
+                A local-first fictional repository that turns three measured breaths into a deterministic digital thallus. Duration, intensity, and cadence shape the specimen; no medical, psychological, or biological diagnosis is inferred.
               </p>
 
               <div className="flex flex-col sm:flex-row items-center gap-4 w-full justify-center max-w-md">
@@ -372,9 +360,9 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Simulated Mitosis Progress text */}
+              {/* Simulated workflow progress text */}
               <h3 className="font-serif text-2xl text-[#d4d4c8] font-light italic mb-2">
-                Fusing Respiration Fibers...
+                Weaving Breath Metrics...
               </h3>
               
               <div className="w-full bg-[#050805] border border-[#2d4f2d]/30 h-2 rounded-full overflow-hidden mb-4 p-0.5">
@@ -386,7 +374,7 @@ export default function App() {
 
               <div className="font-sans text-[9px] text-[#8ba18b] tracking-widest uppercase flex flex-col gap-1 select-none">
                 <span>PROGRESS: {mitosisProgress}%</span>
-                <span className="animate-pulse">SPATIAL SEEDS MUTATING L-SYSTEM COMPILER</span>
+                <span className="animate-pulse">SPATIAL SEEDS RUNNING L-SYSTEM COMPILER</span>
               </div>
             </div>
           )}
@@ -405,7 +393,7 @@ export default function App() {
               </div>
 
               <span className="font-sans text-[9px] tracking-[0.25em] text-[#ffbf00] uppercase font-semibold">
-                Emergent Organism Fused Successfully
+                Digital Specimen Catalogued Successfully
               </span>
 
               <h3 className="font-serif text-3xl sm:text-4xl text-[#d4d4c8] font-light italic tracking-wide mt-2">
@@ -417,7 +405,7 @@ export default function App() {
               </p>
 
               <p className="font-serif italic text-sm text-[#d4d4c8]/80 gap-1 max-w-sm mt-5 mb-8 mx-auto leading-relaxed">
-                "Your final exhalation locked the neural structure. It takes its first breath inside the carbon sphere."
+                "Your final breath completed the local metric set. The specimen opens as a fictional digital thallus."
               </p>
 
               <button
@@ -426,7 +414,7 @@ export default function App() {
                 className="w-full max-w-xs border border-[#ffbf00]/30 py-4 px-6 text-[11px] uppercase tracking-[0.3em] text-[#ffbf00] hover:bg-[#ffbf00]/5 hover:border-[#ffbf00]/50 transition-colors duration-300 cursor-pointer flex items-center justify-center gap-2 mx-auto relative overflow-hidden select-none"
               >
                 <Eye className="w-4 h-4" />
-                <span className="relative z-10 font-sans">Retreat to Isolation Chamber</span>
+                <span className="relative z-10 font-sans">Enter Specimen Chamber</span>
               </button>
             </div>
           )}
@@ -457,7 +445,7 @@ export default function App() {
             THE LICHEN VAULT PROT-ID: 9a423d78-3dfe-43bb-9a15-964f84e46aeb
           </div>
           <div>
-            AUTHENTIC INTERACTION CABINET // NO DIGITAL COPIERS
+            LOCAL CONSENT CABINET // USER-OWNED EXPORTS
           </div>
           <div>
             ARCHIVE TIME: LOCAL BROWSER RECORD
