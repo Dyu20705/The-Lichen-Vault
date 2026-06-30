@@ -41,6 +41,7 @@ Most generative demos stop at the moment of creation. This project explores the 
 - Persisted workflow sessions, trace events, evidence records, and intervention proposals.
 - Human approval panel for high-risk proposals; approval/rejection is idempotent and cannot be performed by an agent context.
 - Vault MCP stdio server with schema-validated tools and policy-protected writes.
+- Safe `/health` endpoint, structured redacted server logs, bounded model retries, model request timeout, and configurable rate limiting for model-backed endpoints.
 
 ## Completed Architecture
 
@@ -54,7 +55,7 @@ The implemented vertical slice is:
 
 Capture or simulation -> Signal Curator -> evidence persistence -> Growth Simulator -> Archivist Agent -> policy validation -> event persistence -> trace persistence -> UI update.
 
-Signal curation, quality checks, seed generation, growth simulation, policy, persistence, migration, and evidence validation are deterministic. The LLM is used only by the Archivist to write a short museum-style observation from persisted evidence. If ADK/model access fails, the workflow writes a local fallback observation and a fallback trace.
+Signal curation, quality checks, seed generation, growth simulation, policy, persistence, migration, and evidence validation are deterministic. The LLM is used only by the Archivist to write a short museum-style observation from persisted evidence. If ADK/model access is missing, fails, times out, returns invalid output, or cites nonexistent evidence, the workflow writes a local fallback observation and a fallback trace. Retry is bounded and reserved for retryable transient failures.
 
 ## Domain And Persistence
 
@@ -93,6 +94,12 @@ Open `http://localhost:3000`.
 | Variable | Required | Description |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | No | Enables Gemini-generated observation entries. Without it, the server returns local fallback entries. |
+| `GOOGLE_API_KEY` | No | Alternative model key accepted by the ADK runtime. |
+| `GEMINI_MODEL` | No | Model identifier for the Archivist agent. Defaults to `gemini-2.5-flash`. |
+| `MODEL_TIMEOUT_MS` | No | Per-model-call timeout. Defaults to `8000`. |
+| `MAX_MODEL_ATTEMPTS` | No | Bounded model attempts. Defaults to `2`; deterministic validation/config failures are not retried. |
+| `MODEL_RATE_LIMIT_WINDOW_MS` | No | Rate-limit window for model-backed endpoints when a model key is configured. Defaults to `60000`. |
+| `MODEL_RATE_LIMIT_MAX` | No | Maximum model-backed requests per window when a model key is configured. Defaults to `12`. |
 | `APP_URL` | No | Public app URL for deployments that need self-referential links. |
 
 Cloud Run secrets and service URLs should be injected through deployment configuration. `.env.example` contains placeholders only.
@@ -103,7 +110,7 @@ Cloud Run secrets and service URLs should be injected through deployment configu
 npm run dev            # Start the Express + Vite development server
 npm run lint           # Type-check the project
 npm run test           # Run Vitest tests
-npm run eval           # Run fake-model workflow and MCP evaluation tests
+npm run eval           # Run fake-model workflow, MCP, and operational evaluation tests
 npm run mcp:dev        # Start the Vault MCP stdio server
 npm run mcp:check      # Dry-run the MCP server and list exposed tools
 npm run build          # Build the client and bundled production server
@@ -120,7 +127,9 @@ npm run release:check
 npm run start
 ```
 
-The production server serves `dist/`, falls back to `index.html` for SPA routes, listens on `0.0.0.0`, and respects a valid `PORT` environment variable. `/health` returns service status, model configuration state, ADK package participation, and current server time.
+The production server serves `dist/`, falls back to `index.html` for SPA routes, listens on `0.0.0.0`, and respects a valid `PORT` environment variable. `/health` returns safe service status, model configuration state, ADK package participation, rate-limit configuration, and current server time. It does not expose API keys, authorization data, specimen data, or raw environment values.
+
+Model-backed endpoints emit structured JSON logs with request ids, workflow ids when available, operation, status, duration/fallback fields, and redacted error context. Model rate limiting applies only when a real model key is configured, so the no-key local fallback path remains available for development and demos.
 
 ## Vault MCP Server
 

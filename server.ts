@@ -9,38 +9,30 @@ dotenv.config();
 
 const app = express();
 
-function readPort(value: string | undefined): number {
-  const parsed = Number(value || 3000);
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-    log("warn", "invalid_port", { value: redact(value), fallback: 3000 });
-    return 3000;
+type LogLevel = "info" | "warn" | "error";
+type RateBucket = { resetAt: number; count: number };
+
+function redactOperationalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactOperationalValue(item));
+  if (value && typeof value === "object") {
+    const next: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (/api[_-]?key|authorization|secret|token|raw[_-]?audio|rawaudio|audio(bytes)?|mediastream/i.test(key)) {
+        next[key] = "[redacted]";
+      } else {
+        next[key] = redactOperationalValue(child);
+      }
+    }
+    return next;
   }
-  return parsed;
+  if (typeof value === "string" && /api[_-]?key|authorization|secret|token|raw[_-]?audio|rawaudio/i.test(value)) {
+    return "[redacted]";
+  }
+  return value;
 }
 
-const PORT = readPort(process.env.PORT);
-const PROMPT_VERSION = "archivist.v1";
-const MODEL_ID = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-const MODEL_TIMEOUT_MS = Number(process.env.MODEL_TIMEOUT_MS || 8000);
-const MAX_MODEL_ATTEMPTS = 2;
-
-const isProduction =
-  process.env.NODE_ENV === "production" ||
-  process.argv.includes("--production") ||
-  process.env.npm_lifecycle_event === "start";
-
-app.use(express.json({ limit: "128kb" }));
-
-function redact(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  if (value.length <= 6) return value ? "[redacted]" : value;
-  return `${value.slice(0, 2)}...[redacted]...${value.slice(-2)}`;
-}
-
-function log(level: "info" | "warn" | "error", message: string, fields: Record<string, unknown> = {}): void {
-  const safeFields = { ...fields };
-  delete safeFields.rawAudio;
-  delete safeFields.audio;
+function log(level: LogLevel, message: string, fields: Record<string, unknown> = {}): void {
+  const safeFields = redactOperationalValue(fields) as Record<string, unknown>;
   console[level](JSON.stringify({
     level,
     message,
@@ -49,6 +41,39 @@ function log(level: "info" | "warn" | "error", message: string, fields: Record<s
   }));
 }
 
+function readPort(value: string | undefined): number {
+  const parsed = Number(value || 3000);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    log("warn", "invalid_port", { value, fallback: 3000 });
+    return 3000;
+  }
+  return parsed;
+}
+
+function readPositiveInt(value: string | undefined, fallback: number, field: string): number {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    log("warn", "invalid_numeric_config", { field, fallback });
+    return fallback;
+  }
+  return parsed;
+}
+
+const PORT = readPort(process.env.PORT);
+const PROMPT_VERSION = "archivist.v1";
+const MODEL_ID = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL_TIMEOUT_MS = readPositiveInt(process.env.MODEL_TIMEOUT_MS, 8000, "MODEL_TIMEOUT_MS");
+const MAX_MODEL_ATTEMPTS = readPositiveInt(process.env.MAX_MODEL_ATTEMPTS, 2, "MAX_MODEL_ATTEMPTS");
+const MODEL_RATE_LIMIT_WINDOW_MS = readPositiveInt(process.env.MODEL_RATE_LIMIT_WINDOW_MS, 60_000, "MODEL_RATE_LIMIT_WINDOW_MS");
+const MODEL_RATE_LIMIT_MAX = readPositiveInt(process.env.MODEL_RATE_LIMIT_MAX, 12, "MODEL_RATE_LIMIT_MAX");
+
+const isProduction =
+  process.env.NODE_ENV === "production" ||
+  process.argv.includes("--production") ||
+  process.env.npm_lifecycle_event === "start";
+
+app.use(express.json({ limit: "128kb" }));
+
 app.use((req, res, next) => {
   const requestId = req.header("x-request-id") || `req_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
   res.locals.requestId = requestId;
@@ -56,16 +81,36 @@ app.use((req, res, next) => {
   next();
 });
 
-const rateBuckets = new Map<string, { resetAt: number; count: number }>();
+const rateBuckets = new Map<string, RateBucket>();
+function modelConfigured(): boolean {
+  return Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+}
+
 function modelRateLimit(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!modelConfigured()) {
+    next();
+    return;
+  }
   const key = req.ip || "local";
   const now = Date.now();
   const existing = rateBuckets.get(key);
-  const bucket = existing && existing.resetAt > now ? existing : { resetAt: now + 60_000, count: 0 };
+  const bucket = existing && existing.resetAt > now ? existing : { resetAt: now + MODEL_RATE_LIMIT_WINDOW_MS, count: 0 };
   bucket.count += 1;
   rateBuckets.set(key, bucket);
-  if (bucket.count > 12) {
-    res.status(429).json({ error: "rate_limited", requestId: res.locals.requestId });
+  if (bucket.count > MODEL_RATE_LIMIT_MAX) {
+    const retryAfterSeconds = Math.ceil((bucket.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+    log("warn", "archivist_rate_limited", {
+      requestId: res.locals.requestId,
+      operation: "archivist_observe",
+      status: "rate_limited",
+      retryAfterSeconds
+    });
+    res.status(429).json({
+      error: "rate_limited",
+      retryAfterSeconds,
+      requestId: res.locals.requestId
+    });
     return;
   }
   next();
@@ -191,7 +236,7 @@ Return JSON matching the output schema. evidenceIds must be real ids from the ev
 }
 
 async function runAdkArchivist(request: ArchivistRequest, signal: AbortSignal): Promise<{ text: string; evidenceIds: string[] }> {
-  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
+  if (!modelConfigured()) {
     throw new Error("model_not_configured");
   }
   if (signal.aborted) throw new Error("model_timeout");
@@ -226,6 +271,14 @@ async function runAdkArchivist(request: ArchivistRequest, signal: AbortSignal): 
   return parsed;
 }
 
+function isRetryableModelError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  if (message.includes("model_not_configured")) return false;
+  if (message.includes("model_referenced_missing_evidence")) return false;
+  if (message.includes("invalid") || message.includes("schema") || message.includes("json")) return false;
+  return message.includes("timeout") || message.includes("fetch") || message.includes("network") || message.includes("rate") || message.includes("temporar");
+}
+
 async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
@@ -240,8 +293,12 @@ app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "the-lichen-vault",
-    modelConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+    modelConfigured: modelConfigured(),
     adkPackage: "@google/adk",
+    rateLimit: {
+      modelWindowMs: MODEL_RATE_LIMIT_WINDOW_MS,
+      modelMaxRequests: MODEL_RATE_LIMIT_MAX
+    },
     time: new Date().toISOString()
   });
 });
@@ -279,24 +336,32 @@ app.post("/api/archivist/observe", modelRateLimit, async (req, res) => {
       log("info", "archivist_observation_grounded", {
         requestId,
         workflowId: parsed.data.workflowId,
+        operation: "archivist_observe",
+        status: "succeeded",
         specimenId: parsed.data.specimen.id,
         model: MODEL_ID,
         promptVersion: PROMPT_VERSION,
-        latencyMs: response.latencyMs,
+        durationMs: response.latencyMs,
         attempt
       });
       res.json(response);
       return;
     } catch (error) {
       const reason = error instanceof Error ? error.message : "model_error";
-      log(attempt === MAX_MODEL_ATTEMPTS ? "warn" : "info", "archivist_model_attempt_failed", {
+      const retryable = isRetryableModelError(error);
+      const finalAttempt = attempt === MAX_MODEL_ATTEMPTS || !retryable;
+      log(finalAttempt ? "warn" : "info", "archivist_model_attempt_failed", {
         requestId,
         workflowId: parsed.data.workflowId,
+        operation: "archivist_observe",
+        status: finalAttempt ? "fallback" : "retrying",
         errorCategory: "model",
+        fallbackReason: finalAttempt ? reason : undefined,
         reason,
-        attempt
+        attempt,
+        retryable
       });
-      if (attempt === MAX_MODEL_ATTEMPTS) {
+      if (finalAttempt) {
         res.json(localFallback(parsed.data, reason, Date.now() - started));
         return;
       }
@@ -343,4 +408,15 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true") {
+  startServer();
+}
+
+export {
+  app,
+  isRetryableModelError,
+  log,
+  modelRateLimit,
+  redactOperationalValue,
+  startServer
+};
